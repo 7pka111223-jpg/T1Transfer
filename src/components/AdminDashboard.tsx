@@ -1344,6 +1344,13 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
                 )}
               </button>
               <Button
+                onClick={() => window.open('https://coach.tripleonebars.com/?lang=en', '_blank')}
+                variant="outline"
+                className="bg-transparent border-t1-gold/40 text-t1-gold hover:text-t1-cream rounded-xl text-xs sm:text-sm px-2 sm:px-4"
+              >
+                Coaching
+              </Button>
+              <Button
                 onClick={onLogout}
                 variant="outline"
                 className="bg-transparent border-t1-red/30 text-t1-cream rounded-xl text-xs sm:text-sm px-2 sm:px-4"

@@ -1268,6 +1268,14 @@ export function MemberDashboard({ member, onLogout }: MemberDashboardProps) {
                   <p className="font-cinzel font-semibold text-sm">Track Progress</p>
                   <p className="text-xs text-muted-foreground">View your journey</p>
                 </button>
+                <button 
+                  onClick={() => window.open('https://coach.tripleonebars.com/?lang=en', '_blank')}
+                  className="p-4 rounded-2xl bg-gradient-to-br from-t1-gold/20 to-t1-red/20 border border-t1-gold/30 text-left hover:from-t1-gold/30 hover:to-t1-red/30 transition-all col-span-2"
+                >
+                  <Dumbbell className="w-6 h-6 text-t1-gold mb-2" />
+                  <p className="font-cinzel font-semibold text-sm">Online Coaching</p>
+                  <p className="text-xs text-muted-foreground">Train with your coach</p>
+                </button>
               </div>
             </div>
           </>

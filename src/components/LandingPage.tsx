@@ -32,6 +32,10 @@ export function LandingPage({ onBookAssessment, onMemberLogin, onAdminLogin }: L
     }
   }
 
+  const handleCoachingClick = () => {
+    window.open('https://coach.tripleonebars.com/?lang=en', '_blank')
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-black via-zinc-900 to-black text-t1-cream overflow-hidden relative" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
       {/* Premium blurred dark background with animated gradient */}
@@ -127,6 +131,14 @@ export function LandingPage({ onBookAssessment, onMemberLogin, onAdminLogin }: L
               className="w-full h-14 sm:h-16 bg-zinc-900/50 backdrop-blur-md border border-zinc-700/50 hover:border-zinc-600 text-zinc-300 hover:text-t1-cream font-medium text-sm sm:text-base rounded-2xl transition-all duration-300 hover:bg-zinc-800/50"
             >
               Member App
+            </button>
+
+            {/* Coaching Button */}
+            <button 
+              onClick={handleCoachingClick}
+              className="w-full h-14 sm:h-16 bg-gradient-to-r from-t1-gold/15 to-t1-gold/5 backdrop-blur-md border border-t1-gold/40 hover:border-t1-gold/60 text-t1-gold hover:text-t1-cream font-medium text-sm sm:text-base rounded-2xl transition-all duration-300 hover:bg-t1-gold/10"
+            >
+              Online Coaching
             </button>
           </div>
 
