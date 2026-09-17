@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { ArrowLeft, Plus, Trash2, Edit2, Check, X, Dumbbell, Users, TrendingUp, Settings, Bell, ChevronRight, Search, UserPlus, CreditCard, Star, Activity, Clock, Award, Calendar, Shield, DollarSign, Phone, MessageCircle, XCircle, MapPin, MoreVertical, AlertTriangle, QrCode } from 'lucide-react'
+import { ArrowLeft, Plus, Trash2, Edit2, Check, X, Dumbbell, Users, TrendingUp, Settings, Bell, ChevronRight, Search, UserPlus, CreditCard, Star, Activity, Clock, Award, Calendar, Shield, DollarSign, Phone, MessageCircle, XCircle, MapPin, MoreVertical, AlertTriangle, QrCode, Download } from 'lucide-react'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Label } from './ui/label'
@@ -61,6 +61,7 @@ type AttendanceRecord = {
   member_id: string
   check_in_time: string
   check_in_method: string
+  branch_id?: string | null
   member?: { full_name: string; member_id: string }
 }
 
@@ -290,6 +291,9 @@ const operativeGhost = (() => {
   return { schema, matrix, registry, logs, derive }
 })()
 
+const toDateInputValue = (date: Date) =>
+  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+
 void operativeGhost
 
 export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
@@ -315,6 +319,14 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
   const [showSessionDetail, setShowSessionDetail] = useState(false)
   const [classSearch, setClassSearch] = useState('')
   const [rosterFilter, setRosterFilter] = useState<'all' | 'booked' | 'attended' | 'cancelled'>('all')
+  const [exportFrom, setExportFrom] = useState(() => {
+    const d = new Date()
+    d.setDate(d.getDate() - 29)
+    return toDateInputValue(d)
+  })
+  const [exportTo, setExportTo] = useState(() => toDateInputValue(new Date()))
+  const [isExporting, setIsExporting] = useState(false)
+  const [exportMessage, setExportMessage] = useState<string | null>(null)
   const [manualMemberId, setManualMemberId] = useState('')
   const [windowOffset, setWindowOffset] = useState(0) // 0 = this Fri->Fri, -1 previous, +1 next
   const [branches, setBranches] = useState<{id: string; name: string; location?: string}[]>([])
@@ -808,6 +820,91 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
     const ampm = h >= 12 ? 'PM' : 'AM'
     const hour12 = h % 12 || 12
     return `${hour12}:${minutes} ${ampm}`
+  }
+
+  const handleExportAttendance = async () => {
+    if (!exportFrom || !exportTo) {
+      setExportMessage('Pick both a start and an end date.')
+      return
+    }
+    if (exportFrom > exportTo) {
+      setExportMessage('The start date must be on or before the end date.')
+      return
+    }
+
+    setIsExporting(true)
+    setExportMessage(null)
+
+    try {
+      // Local day boundaries, converted to the timestamps stored in the table
+      const fromIso = new Date(`${exportFrom}T00:00:00`).toISOString()
+      const toIso = new Date(`${exportTo}T23:59:59.999`).toISOString()
+
+      const pageSize = 1000
+      let rows: AttendanceRecord[] = []
+      let start = 0
+
+      while (true) {
+        const { data, error } = await supabase
+          .from('attendance_records')
+          .select('id, check_in_time, check_in_method, branch_id, member:members(full_name, member_id)')
+          .gte('check_in_time', fromIso)
+          .lte('check_in_time', toIso)
+          .order('check_in_time', { ascending: true })
+          .range(start, start + pageSize - 1)
+
+        if (error) throw error
+
+        const batch = (data as AttendanceRecord[]) || []
+        rows = rows.concat(batch)
+        if (batch.length < pageSize) break
+        start += pageSize
+      }
+
+      if (rows.length === 0) {
+        setExportMessage('No check-ins found in that period.')
+        return
+      }
+
+      const cell = (value: unknown) => {
+        const text = value === null || value === undefined ? '' : String(value)
+        return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
+      }
+
+      const pad = (n: number) => String(n).padStart(2, '0')
+      const lines: string[][] = [['Date', 'Time', 'Member ID', 'Member Name', 'Method', 'Branch', 'Checked in at']]
+
+      for (const row of rows) {
+        const at = new Date(row.check_in_time)
+        lines.push([
+          `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`,
+          `${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`,
+          row.member?.member_id ?? '',
+          row.member?.full_name ?? '',
+          row.check_in_method ?? '',
+          branches.find(b => b.id === row.branch_id)?.name ?? '',
+          row.check_in_time
+        ])
+      }
+
+      // BOM so Excel reads the file as UTF-8
+      const csv = lines.map(line => line.map(cell).join(',')).join('\r\n')
+      const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `attendance_${exportFrom}_to_${exportTo}.csv`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      URL.revokeObjectURL(url)
+
+      setExportMessage(`Exported ${rows.length} check-in${rows.length === 1 ? '' : 's'}.`)
+    } catch (err) {
+      setExportMessage(err instanceof Error ? err.message : 'Export failed')
+    } finally {
+      setIsExporting(false)
+    }
   }
 
   const getDayName = (day: number) => {
@@ -2167,7 +2264,46 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
               </div>
             </div>
 
-            <div className="space-y-3">
+            <div className="mt-4 bg-secondary rounded-2xl p-4 border border-t1-red/10">
+              <h3 className="font-cinzel font-semibold mb-3 flex items-center gap-2">
+                <Download className="w-4 h-4 text-t1-gold" />
+                Export attendance logs
+              </h3>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-muted-foreground mb-1">From</label>
+                  <Input
+                    type="date"
+                    value={exportFrom}
+                    max={exportTo || undefined}
+                    onChange={(e) => setExportFrom(e.target.value)}
+                    className="bg-t1-black border-t1-red/20 text-t1-cream"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-muted-foreground mb-1">To</label>
+                  <Input
+                    type="date"
+                    value={exportTo}
+                    min={exportFrom || undefined}
+                    onChange={(e) => setExportTo(e.target.value)}
+                    className="bg-t1-black border-t1-red/20 text-t1-cream"
+                  />
+                </div>
+              </div>
+              <Button
+                onClick={handleExportAttendance}
+                disabled={isExporting}
+                className="mt-3 w-full h-11 bg-gradient-to-r from-t1-red to-t1-dark-red text-white rounded-xl font-cinzel"
+              >
+                {isExporting ? 'Exporting…' : 'Export CSV'}
+              </Button>
+              {exportMessage && (
+                <p className="mt-2 text-xs text-muted-foreground">{exportMessage}</p>
+              )}
+            </div>
+
+            <div className="space-y-3 mt-4">
               {attendance.map(record => (
                 <div key={record.id} className="bg-secondary rounded-2xl p-4 border border-t1-red/10">
                   <div className="flex items-center justify-between">
