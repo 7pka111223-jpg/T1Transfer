@@ -2136,7 +2136,7 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
         )}
 
         {activeTab === 'qr' && (
-          <CheckInQrScreen admin={admin} onBack={() => setActiveTab('overview')} />
+          <CheckInQrScreen onBack={() => setActiveTab('overview')} />
         )}
 
         {activeTab === 'attendance' && (

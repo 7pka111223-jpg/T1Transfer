@@ -30,21 +30,38 @@ import { QrScannerView } from './QrScanner'
 type MemberDashboardProps = {
   member: MemberData
   onLogout: () => void
-  checkInToken?: string | null
-  onCheckInTokenHandled?: () => void
+  checkInPayload?: string | null
+  onCheckInHandled?: () => void
 }
 
-// Accepts either a bare token or the deep-link URL the gym's QR encodes.
-const extractCheckInToken = (value: string): string => {
+type CheckInTarget =
+  | { kind: 'branch'; branchId: string }
+  | { kind: 'token'; token: string }
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+// Understands the gym's QR payloads: the static per-branch deep link
+// (/?branch=<uuid>), a token deep link (/?checkin=<token>), the internal
+// "branch:<uuid>" form, or a bare branch id / token.
+const parseCheckInTarget = (value: string): CheckInTarget => {
   const raw = value.trim()
+
+  if (raw.toLowerCase().startsWith('branch:')) {
+    return { kind: 'branch', branchId: raw.slice('branch:'.length).trim() }
+  }
+
   try {
     const url = new URL(raw)
+    const branch = url.searchParams.get('branch')
+    if (branch) return { kind: 'branch', branchId: branch.trim() }
     const token = url.searchParams.get('checkin') || url.searchParams.get('t')
-    if (token) return token.trim()
+    if (token) return { kind: 'token', token: token.trim() }
   } catch {
-    // not a URL - fall through and treat it as a bare token
+    // not a URL - fall through
   }
-  return raw
+
+  if (UUID_RE.test(raw)) return { kind: 'branch', branchId: raw }
+  return { kind: 'token', token: raw }
 }
 
 type Subscription = {
@@ -133,7 +150,7 @@ const getSubscriptionStatus = (subscription: Subscription | null): SubscriptionS
   return { isValid, isExpired, isExhausted, needsRenewal, renewalReason, daysUntilExpiry }
 }
 
-export function MemberDashboard({ member, onLogout, checkInToken, onCheckInTokenHandled }: MemberDashboardProps) {
+export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHandled }: MemberDashboardProps) {
   const [activeTab, setActiveTab] = useState<'home' | 'classes' | 'progress' | 'profile'>('home')
   const [liveMember, setLiveMember] = useState<MemberData | null>(null)
   const [isLoadingMember, setIsLoadingMember] = useState(true)
@@ -840,24 +857,67 @@ export function MemberDashboard({ member, onLogout, checkInToken, onCheckInToken
       const activeSub = subscription || sharedSubscription
       if (!activeSub) throw new Error('No active subscription found')
 
-      const scannedToken = extractCheckInToken(scannedValue)
-      const { data: redeemedData, error: redeemError } = await supabase.rpc('redeem_checkin_token' as any, {
-        p_token: scannedToken,
-        p_member_id: member.id
-      })
-
-      if (redeemError) {
-        const raw = redeemError.message || ''
-        if (raw.includes('expired_token')) throw new Error('That code has expired. Scan the code currently on the gym screen.')
-        if (raw.includes('invalid_token')) throw new Error('That is not a valid Triple One check-in code.')
-        if (raw.includes('member_inactive')) throw new Error('Your membership is not active. Please see reception.')
-        throw new Error('Check-in failed. Please try again.')
-      }
-
-      const redeemed = redeemedData as { attendance_id: string; duplicate?: boolean }
+      const target = parseCheckInTarget(scannedValue)
       const now = new Date()
       const nowIso = now.toISOString()
       const isSessionBased = activeSub.package?.type === 'session'
+
+      let attendanceId: string | null = null
+      let isDuplicate = false
+
+      if (target.kind === 'branch') {
+        const { data: branch } = await supabase
+          .from('branches')
+          .select('id')
+          .eq('id', target.branchId)
+          .maybeSingle()
+
+        if (!branch) throw new Error('That is not a valid Triple One check-in code.')
+
+        // Ignore repeat scans inside a short window
+        const { data: recent } = await supabase
+          .from('attendance_records')
+          .select('id')
+          .eq('member_id', member.id)
+          .gte('check_in_time', new Date(now.getTime() - 2 * 60 * 1000).toISOString())
+          .limit(1)
+
+        if (recent && recent.length > 0) {
+          isDuplicate = true
+          attendanceId = recent[0].id
+        } else {
+          const { data: inserted, error: attendanceError } = await supabase
+            .from('attendance_records')
+            .insert({
+              member_id: member.id,
+              check_in_time: nowIso,
+              check_in_method: 'qr',
+              branch_id: target.branchId
+            })
+            .select('id')
+            .single()
+
+          if (attendanceError) throw attendanceError
+          attendanceId = inserted?.id ?? null
+        }
+      } else {
+        const { data: redeemedData, error: redeemError } = await supabase.rpc('redeem_checkin_token' as any, {
+          p_token: target.token,
+          p_member_id: member.id
+        })
+
+        if (redeemError) {
+          const raw = redeemError.message || ''
+          if (raw.includes('expired_token')) throw new Error('That code has expired. Scan the code currently on the gym screen.')
+          if (raw.includes('invalid_token')) throw new Error('That is not a valid Triple One check-in code.')
+          if (raw.includes('member_inactive')) throw new Error('Your membership is not active. Please see reception.')
+          throw new Error('Check-in failed. Please try again.')
+        }
+
+        const redeemed = redeemedData as { attendance_id: string; duplicate?: boolean }
+        attendanceId = redeemed.attendance_id
+        isDuplicate = Boolean(redeemed.duplicate)
+      }
 
       const { data: bookings } = await supabase
         .from('class_bookings')
@@ -886,16 +946,18 @@ export function MemberDashboard({ member, onLogout, checkInToken, onCheckInToken
             .eq('id', classBooking.id)
           if (bookingError) throw bookingError
 
-          await supabase
-            .from('attendance_records')
-            .update({
-              class_booking_id: classBooking.id,
-              session_id: (classBooking as any)?.session_id || null
-            })
-            .eq('id', redeemed.attendance_id)
+          if (attendanceId) {
+            await supabase
+              .from('attendance_records')
+              .update({
+                class_booking_id: classBooking.id,
+                session_id: (classBooking as any)?.session_id || null
+              })
+              .eq('id', attendanceId)
+          }
 
           if (isSessionBased) {
-            newSessionsRemaining = await deductSessionForBooking(classBooking, redeemed.attendance_id, activeSub, nowIso)
+            newSessionsRemaining = await deductSessionForBooking(classBooking, attendanceId, activeSub, nowIso)
             if (sharedSubscription) {
               setSharedSubscription(prev => prev ? { ...prev, sessions_remaining: newSessionsRemaining } : null)
             } else if (subscription) {
@@ -927,7 +989,7 @@ export function MemberDashboard({ member, onLogout, checkInToken, onCheckInToken
         warning
       })
       setCheckInState('success')
-      if (!redeemed.duplicate) {
+      if (!isDuplicate) {
         setAttendanceCount(prev => prev + 1)
       }
     } catch (err) {
@@ -938,11 +1000,11 @@ export function MemberDashboard({ member, onLogout, checkInToken, onCheckInToken
 
   // Run a check-in that arrived from the gym's QR deep link, once data has loaded
   useEffect(() => {
-    if (!checkInToken || !dataLoaded) return
+    if (!checkInPayload || !dataLoaded) return
     setShowAttendModal(true)
-    handleQrCheckIn(checkInToken)
-    onCheckInTokenHandled?.()
-  }, [checkInToken, dataLoaded])
+    handleQrCheckIn(checkInPayload)
+    onCheckInHandled?.()
+  }, [checkInPayload, dataLoaded])
 
   const handleClassCheckIn = async (booking: ClassBooking) => {
     setClassCheckInLoading(booking.id)

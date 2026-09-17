@@ -18,6 +18,18 @@ type View =
   | 'member-dashboard'
   | 'member-app'
 
+// Check-in payload carried by the gym's QR deep link:
+//   /?branch=<branch-uuid>  -> static printed code for a branch
+//   /?checkin=<token>       -> short-lived token code
+const readCheckInPayload = (): string | null => {
+  if (typeof window === 'undefined') return null
+  const params = new URLSearchParams(window.location.search)
+  const branch = params.get('branch')
+  if (branch) return `branch:${branch.trim()}`
+  const token = params.get('checkin') || params.get('t')
+  return token ? token.trim() : null
+}
+
 export default function App() {
   const computeIsPwa = () => {
     if (typeof window === 'undefined') return false
@@ -39,11 +51,8 @@ export default function App() {
   })
   const [isPwa, setIsPwa] = useState<boolean>(() => computeIsPwa())
 
-  // Token from the gym's QR code deep link (/?checkin=<token>)
-  const [pendingCheckInToken, setPendingCheckInToken] = useState<string | null>(() => {
-    if (typeof window === 'undefined') return null
-    return new URLSearchParams(window.location.search).get('checkin')
-  })
+  // Payload from the gym's QR code deep link
+  const [pendingCheckIn, setPendingCheckIn] = useState<string | null>(() => readCheckInPayload())
 
   const [currentView, setCurrentView] = useState<View>(() => {
     // For non-logged-in users, always start at landing page
@@ -68,10 +77,10 @@ export default function App() {
     const handlePathChange = () => {
       const path = window.location.pathname
 
-      // Deep link from the gym's QR code: /?checkin=<token>
-      const checkInToken = new URLSearchParams(window.location.search).get('checkin')
-      if (checkInToken) {
-        setPendingCheckInToken(checkInToken)
+      // Deep link from the gym's QR code
+      const payload = readCheckInPayload()
+      if (payload) {
+        setPendingCheckIn(payload)
         window.history.replaceState({}, '', window.location.pathname)
         setCurrentView(localStorage.getItem('t1_member') ? 'member-dashboard' : 'login')
         return
@@ -107,10 +116,10 @@ export default function App() {
   }, [currentView])
 
   useEffect(() => {
-    if (!isPwa && currentView === 'login' && !pendingCheckInToken) {
+    if (!isPwa && currentView === 'login' && !pendingCheckIn) {
       setCurrentView('landing')
     }
-  }, [isPwa, currentView, pendingCheckInToken])
+  }, [isPwa, currentView, pendingCheckIn])
 
   useEffect(() => {
     if ((currentView === 'member-dashboard' || currentView === 'admin-dashboard' || currentView === 'landing') && isPwa) {
@@ -250,8 +259,8 @@ export default function App() {
         <MemberDashboard
           member={currentMember}
           onLogout={handleLogout}
-          checkInToken={pendingCheckInToken}
-          onCheckInTokenHandled={() => setPendingCheckInToken(null)}
+          checkInPayload={pendingCheckIn}
+          onCheckInHandled={() => setPendingCheckIn(null)}
         />
       ) : (
         <div className={isPwa && currentView !== 'admin-dashboard' ? 'pwa-no-select' : ''}>

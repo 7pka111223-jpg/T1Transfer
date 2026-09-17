@@ -237,3 +237,36 @@ body.pwa-scrollable {
   height: auto !important;
   overscroll-behavior: auto !important;
 }
+
+/* Print only the check-in poster */
+@media print {
+  html, body {
+    height: auto !important;
+    background: #fff !important;
+  }
+
+  body * {
+    visibility: hidden;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .print-qr, .print-qr * {
+    visibility: visible;
+  }
+
+  .print-qr {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    border-radius: 0;
+    box-shadow: none !important;
+  }
+
+  @page {
+    margin: 12mm;
+  }
+}
