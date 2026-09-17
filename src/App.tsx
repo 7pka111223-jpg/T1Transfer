@@ -39,6 +39,12 @@ export default function App() {
   })
   const [isPwa, setIsPwa] = useState<boolean>(() => computeIsPwa())
 
+  // Token from the gym's QR code deep link (/?checkin=<token>)
+  const [pendingCheckInToken, setPendingCheckInToken] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null
+    return new URLSearchParams(window.location.search).get('checkin')
+  })
+
   const [currentView, setCurrentView] = useState<View>(() => {
     // For non-logged-in users, always start at landing page
     const hasLoggedInUser = localStorage.getItem('t1_member') || localStorage.getItem('t1_admin')
@@ -61,6 +67,16 @@ export default function App() {
   useEffect(() => {
     const handlePathChange = () => {
       const path = window.location.pathname
+
+      // Deep link from the gym's QR code: /?checkin=<token>
+      const checkInToken = new URLSearchParams(window.location.search).get('checkin')
+      if (checkInToken) {
+        setPendingCheckInToken(checkInToken)
+        window.history.replaceState({}, '', window.location.pathname)
+        setCurrentView(localStorage.getItem('t1_member') ? 'member-dashboard' : 'login')
+        return
+      }
+
       const saved = localStorage.getItem('t1_view') as View | null
       const hasLoggedInUser = localStorage.getItem('t1_member') || localStorage.getItem('t1_admin')
       
@@ -91,10 +107,10 @@ export default function App() {
   }, [currentView])
 
   useEffect(() => {
-    if (!isPwa && currentView === 'login') {
+    if (!isPwa && currentView === 'login' && !pendingCheckInToken) {
       setCurrentView('landing')
     }
-  }, [isPwa, currentView])
+  }, [isPwa, currentView, pendingCheckInToken])
 
   useEffect(() => {
     if ((currentView === 'member-dashboard' || currentView === 'admin-dashboard' || currentView === 'landing') && isPwa) {
@@ -234,6 +250,8 @@ export default function App() {
         <MemberDashboard
           member={currentMember}
           onLogout={handleLogout}
+          checkInToken={pendingCheckInToken}
+          onCheckInTokenHandled={() => setPendingCheckInToken(null)}
         />
       ) : (
         <div className={isPwa && currentView !== 'admin-dashboard' ? 'pwa-no-select' : ''}>

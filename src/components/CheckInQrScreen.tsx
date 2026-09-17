@@ -82,6 +82,7 @@ export function CheckInQrScreen({ admin, onBack }: CheckInQrScreenProps) {
     return () => window.clearInterval(id)
   }, [expiresAt, generateToken])
 
+  const checkInUrl = token ? `${window.location.origin}/?checkin=${token}` : ''
   const selectedBranch = branches.find((b) => b.id === branchId)
 
   return (
@@ -118,8 +119,8 @@ export function CheckInQrScreen({ admin, onBack }: CheckInQrScreenProps) {
 
       <div className="bg-t1-black border border-t1-red/30 rounded-2xl p-6 flex flex-col items-center">
         <div className="bg-white rounded-2xl p-4">
-          {token ? (
-            <QRCodeSVG value={token} size={232} bgColor="#ffffff" fgColor="#0a0a0a" level="M" />
+          {checkInUrl ? (
+            <QRCodeSVG value={checkInUrl} size={232} bgColor="#ffffff" fgColor="#0a0a0a" level="M" />
           ) : (
             <div className="w-[232px] h-[232px] flex items-center justify-center">
               {error ? (
@@ -160,8 +161,9 @@ export function CheckInQrScreen({ admin, onBack }: CheckInQrScreenProps) {
       <div className="mt-5 flex items-start gap-3 bg-secondary border border-t1-red/20 rounded-xl p-4">
         <ShieldCheck className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
         <p className="text-xs text-muted-foreground">
-          The code refreshes every {ROTATION_SECONDS} seconds and is validated on the server, so a
-          screenshot stops working once it expires.
+          Members scan this with their phone camera — it opens the app and checks them in. The code
+          refreshes every {ROTATION_SECONDS} seconds and is validated on the server, so a screenshot
+          stops working once it expires.
         </p>
       </div>
     </div>

@@ -30,6 +30,21 @@ import { QrScannerView } from './QrScanner'
 type MemberDashboardProps = {
   member: MemberData
   onLogout: () => void
+  checkInToken?: string | null
+  onCheckInTokenHandled?: () => void
+}
+
+// Accepts either a bare token or the deep-link URL the gym's QR encodes.
+const extractCheckInToken = (value: string): string => {
+  const raw = value.trim()
+  try {
+    const url = new URL(raw)
+    const token = url.searchParams.get('checkin') || url.searchParams.get('t')
+    if (token) return token.trim()
+  } catch {
+    // not a URL - fall through and treat it as a bare token
+  }
+  return raw
 }
 
 type Subscription = {
@@ -118,10 +133,11 @@ const getSubscriptionStatus = (subscription: Subscription | null): SubscriptionS
   return { isValid, isExpired, isExhausted, needsRenewal, renewalReason, daysUntilExpiry }
 }
 
-export function MemberDashboard({ member, onLogout }: MemberDashboardProps) {
+export function MemberDashboard({ member, onLogout, checkInToken, onCheckInTokenHandled }: MemberDashboardProps) {
   const [activeTab, setActiveTab] = useState<'home' | 'classes' | 'progress' | 'profile'>('home')
   const [liveMember, setLiveMember] = useState<MemberData | null>(null)
   const [isLoadingMember, setIsLoadingMember] = useState(true)
+  const [dataLoaded, setDataLoaded] = useState(false)
   const [subscription, setSubscription] = useState<Subscription | null>(null)
   const [sharedSubscription, setSharedSubscription] = useState<any>(null)
   const [branchName, setBranchName] = useState<string | null>(null)
@@ -336,7 +352,8 @@ export function MemberDashboard({ member, onLogout }: MemberDashboardProps) {
       const cancelledKeys = new Set(cancelledSessionsRes.data.map(s => `${s.group_class_id}-${s.session_date}`))
       setCancelledSessions(cancelledKeys)
     }
-    
+
+    setDataLoaded(true)
   }
 
   // Animate progress bar from 100% to actual percentage when subscription loads
@@ -813,7 +830,7 @@ export function MemberDashboard({ member, onLogout }: MemberDashboardProps) {
     }
   }
 
-  const handleQrCheckIn = async (scannedToken: string) => {
+  const handleQrCheckIn = async (scannedValue: string) => {
     setShowScanner(false)
     setCheckInState('checking')
     setCheckInError(null)
@@ -823,6 +840,7 @@ export function MemberDashboard({ member, onLogout }: MemberDashboardProps) {
       const activeSub = subscription || sharedSubscription
       if (!activeSub) throw new Error('No active subscription found')
 
+      const scannedToken = extractCheckInToken(scannedValue)
       const { data: redeemedData, error: redeemError } = await supabase.rpc('redeem_checkin_token' as any, {
         p_token: scannedToken,
         p_member_id: member.id
@@ -917,6 +935,14 @@ export function MemberDashboard({ member, onLogout }: MemberDashboardProps) {
       setCheckInState('error')
     }
   }
+
+  // Run a check-in that arrived from the gym's QR deep link, once data has loaded
+  useEffect(() => {
+    if (!checkInToken || !dataLoaded) return
+    setShowAttendModal(true)
+    handleQrCheckIn(checkInToken)
+    onCheckInTokenHandled?.()
+  }, [checkInToken, dataLoaded])
 
   const handleClassCheckIn = async (booking: ClassBooking) => {
     setClassCheckInLoading(booking.id)
