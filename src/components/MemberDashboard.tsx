@@ -25,6 +25,7 @@ import { Button } from './ui/button'
 import { supabase } from '../lib/supabase'
 import { MemberData } from './MemberLogin'
 import { WorkoutTracking } from './WorkoutTracking'
+import { QrScannerView } from './QrScanner'
 
 type MemberDashboardProps = {
   member: MemberData
@@ -139,6 +140,7 @@ export function MemberDashboard({ member, onLogout }: MemberDashboardProps) {
   const [animatedProgress, setAnimatedProgress] = useState(100)
   
   const [showAttendModal, setShowAttendModal] = useState(false)
+  const [showScanner, setShowScanner] = useState(false)
   const [checkInState, setCheckInState] = useState<'idle' | 'checking' | 'success' | 'error'>('idle')
   const [checkInError, setCheckInError] = useState<string | null>(null)
   const [checkInResult, setCheckInResult] = useState<{
@@ -768,6 +770,154 @@ export function MemberDashboard({ member, onLogout }: MemberDashboardProps) {
     }
   }
 
+  const deductSessionForBooking = async (
+    booking: ClassBooking,
+    attendanceId: string | null,
+    activeSub: any,
+    nowIso: string
+  ): Promise<number | null> => {
+    if (activeSub.package?.type !== 'session') return activeSub.sessions_remaining
+
+    try {
+      const { data: rpcData, error: rpcError } = await supabase.rpc('deduct_session_for_attendance' as any, {
+        p_member_id: member.id,
+        p_booking_id: booking.id,
+        p_session_id: (booking as any)?.session_id || null,
+        p_attendance_id: attendanceId
+      })
+      if (rpcError) throw rpcError
+      if (rpcData && typeof rpcData.sessions_remaining === 'number') return rpcData.sessions_remaining
+      return activeSub.sessions_remaining !== null ? Math.max(0, activeSub.sessions_remaining - 1) : null
+    } catch {
+      if (sharedSubscription && activeSub.sessions_remaining !== null) {
+        const remaining = Math.max(0, activeSub.sessions_remaining - 1)
+        await supabase.from('shared_subscriptions' as any).update({ sessions_remaining: remaining }).eq('id', sharedSubscription.id)
+        await supabase.from('session_deductions' as any).insert({
+          member_id: member.id,
+          source_type: 'shared',
+          source_id: sharedSubscription.id,
+          booking_id: booking.id,
+          attendance_id: attendanceId,
+          session_id: (booking as any)?.session_id || null,
+          action: 'deduct',
+          created_at: nowIso
+        })
+        return remaining
+      }
+      if (subscription && subscription.sessions_remaining !== null) {
+        const remaining = Math.max(0, subscription.sessions_remaining - 1)
+        await supabase.from('member_subscriptions').update({ sessions_remaining: remaining }).eq('id', subscription.id)
+        return remaining
+      }
+      return activeSub.sessions_remaining
+    }
+  }
+
+  const handleQrCheckIn = async (scannedToken: string) => {
+    setShowScanner(false)
+    setCheckInState('checking')
+    setCheckInError(null)
+    setCheckInResult(null)
+
+    try {
+      const activeSub = subscription || sharedSubscription
+      if (!activeSub) throw new Error('No active subscription found')
+
+      const { data: redeemedData, error: redeemError } = await supabase.rpc('redeem_checkin_token' as any, {
+        p_token: scannedToken,
+        p_member_id: member.id
+      })
+
+      if (redeemError) {
+        const raw = redeemError.message || ''
+        if (raw.includes('expired_token')) throw new Error('That code has expired. Scan the code currently on the gym screen.')
+        if (raw.includes('invalid_token')) throw new Error('That is not a valid Triple One check-in code.')
+        if (raw.includes('member_inactive')) throw new Error('Your membership is not active. Please see reception.')
+        throw new Error('Check-in failed. Please try again.')
+      }
+
+      const redeemed = redeemedData as { attendance_id: string; duplicate?: boolean }
+      const now = new Date()
+      const nowIso = now.toISOString()
+      const isSessionBased = activeSub.package?.type === 'session'
+
+      const { data: bookings } = await supabase
+        .from('class_bookings')
+        .select('*, group_class:group_classes(*)')
+        .eq('member_id', member.id)
+        .eq('class_date', nowIso.split('T')[0])
+        .eq('status', 'booked')
+
+      const classBooking = (bookings || []).find((b) => getCheckInWindow(b).isOpen)
+
+      let newSessionsRemaining = activeSub.sessions_remaining
+      let warning: string | null = null
+
+      if (classBooking) {
+        const { data: alreadyAttended } = await supabase
+          .from('attendance_records')
+          .select('id')
+          .eq('member_id', member.id)
+          .eq('class_booking_id', classBooking.id)
+          .maybeSingle()
+
+        if (!alreadyAttended) {
+          const { error: bookingError } = await supabase
+            .from('class_bookings')
+            .update({ status: 'attended', checked_in_at: nowIso })
+            .eq('id', classBooking.id)
+          if (bookingError) throw bookingError
+
+          await supabase
+            .from('attendance_records')
+            .update({
+              class_booking_id: classBooking.id,
+              session_id: (classBooking as any)?.session_id || null
+            })
+            .eq('id', redeemed.attendance_id)
+
+          if (isSessionBased) {
+            newSessionsRemaining = await deductSessionForBooking(classBooking, redeemed.attendance_id, activeSub, nowIso)
+            if (sharedSubscription) {
+              setSharedSubscription(prev => prev ? { ...prev, sessions_remaining: newSessionsRemaining } : null)
+            } else if (subscription) {
+              setSubscription(prev => prev ? { ...prev, sessions_remaining: newSessionsRemaining } : null)
+            }
+          }
+        }
+      } else {
+        warning = 'Attendance recorded. No class was in its check-in window.'
+      }
+
+      const endDate = activeSub.end_date ? new Date(activeSub.end_date) : null
+      const today = new Date()
+      today.setHours(0, 0, 0, 0)
+
+      if (!warning && isSessionBased && newSessionsRemaining !== null && newSessionsRemaining > 0 && newSessionsRemaining < 4) {
+        warning = `Running low on sessions (${newSessionsRemaining} left). Consider renewing soon!`
+      } else if (!warning && endDate) {
+        const daysUntilExpiry = Math.ceil((endDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
+        if (daysUntilExpiry <= 7 && daysUntilExpiry > 0) {
+          warning = `Your subscription expires in ${daysUntilExpiry} day${daysUntilExpiry !== 1 ? 's' : ''}. Consider renewing soon!`
+        }
+      }
+
+      setCheckInResult({
+        sessionsRemaining: newSessionsRemaining,
+        expiryDate: activeSub.end_date,
+        isSessionBased,
+        warning
+      })
+      setCheckInState('success')
+      if (!redeemed.duplicate) {
+        setAttendanceCount(prev => prev + 1)
+      }
+    } catch (err) {
+      setCheckInError(err instanceof Error ? err.message : 'Check-in failed')
+      setCheckInState('error')
+    }
+  }
+
   const handleClassCheckIn = async (booking: ClassBooking) => {
     setClassCheckInLoading(booking.id)
     try {
@@ -883,6 +1033,7 @@ export function MemberDashboard({ member, onLogout }: MemberDashboardProps) {
 
   const closeAttendModal = () => {
     setShowAttendModal(false)
+    setShowScanner(false)
     setCheckInState('idle')
     setCheckInError(null)
     setCheckInResult(null)
@@ -944,26 +1095,54 @@ export function MemberDashboard({ member, onLogout }: MemberDashboardProps) {
       {showAttendModal && (
         <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-6">
           <div className="bg-t1-black border border-t1-red/30 rounded-2xl w-full max-w-sm overflow-hidden">
-            {checkInState === 'idle' && (
+            {checkInState === 'idle' && !showScanner && (
               <>
                 <div className="p-6 text-center">
                   <div className="w-20 h-20 mx-auto rounded-full bg-gradient-to-br from-t1-red to-t1-dark-red flex items-center justify-center mb-4">
-                    <Check className="w-10 h-10" />
+                    <QrCode className="w-10 h-10" />
                   </div>
                   <h3 className="text-xl font-cinzel font-bold mb-2">Ready to Check In?</h3>
                   <p className="text-muted-foreground text-sm">
-                    Tap below to record your attendance
+                    Scan the QR code shown at the gym to record your attendance
                   </p>
                 </div>
                 <div className="p-6 pt-0 space-y-3">
                   <Button
-                    onClick={handleAttend}
+                    onClick={() => setShowScanner(true)}
                     className="w-full h-12 bg-gradient-to-r from-t1-red to-t1-dark-red text-white rounded-xl font-cinzel"
                   >
-                    Check In Now
+                    Scan QR Code
+                  </Button>
+                  <Button
+                    onClick={handleAttend}
+                    variant="outline"
+                    className="w-full h-12 bg-transparent border-t1-red/30 text-t1-cream rounded-xl font-cinzel"
+                  >
+                    Check In Without Scanning
                   </Button>
                   <Button
                     onClick={closeAttendModal}
+                    variant="ghost"
+                    className="w-full h-12 text-muted-foreground rounded-xl font-cinzel"
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </>
+            )}
+
+            {checkInState === 'idle' && showScanner && (
+              <>
+                <div className="p-6">
+                  <h3 className="text-lg font-cinzel font-bold mb-1 text-center">Scan the gym's QR code</h3>
+                  <p className="text-muted-foreground text-xs text-center mb-4">
+                    Hold your phone up to the screen at reception
+                  </p>
+                  <QrScannerView onDecode={handleQrCheckIn} />
+                </div>
+                <div className="p-6 pt-0">
+                  <Button
+                    onClick={() => setShowScanner(false)}
                     variant="outline"
                     className="w-full h-12 bg-transparent border-t1-red/30 text-t1-cream rounded-xl font-cinzel"
                   >

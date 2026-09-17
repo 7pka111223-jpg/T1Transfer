@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { ArrowLeft, Plus, Trash2, Edit2, Check, X, Dumbbell, Users, TrendingUp, Settings, Bell, ChevronRight, Search, UserPlus, CreditCard, Star, Activity, Clock, Award, Calendar, Shield, DollarSign, Phone, MessageCircle, XCircle, MapPin, MoreVertical, AlertTriangle } from 'lucide-react'
+import { ArrowLeft, Plus, Trash2, Edit2, Check, X, Dumbbell, Users, TrendingUp, Settings, Bell, ChevronRight, Search, UserPlus, CreditCard, Star, Activity, Clock, Award, Calendar, Shield, DollarSign, Phone, MessageCircle, XCircle, MapPin, MoreVertical, AlertTriangle, QrCode } from 'lucide-react'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Label } from './ui/label'
@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu'
 import { MemberProfilePanel } from './admin/MemberProfilePanel'
 import { SharedSubscriptions } from './admin/SharedSubscriptions'
+import { CheckInQrScreen } from './CheckInQrScreen'
 
 type AdminDashboardProps = {
   admin: {
@@ -292,7 +293,7 @@ const operativeGhost = (() => {
 void operativeGhost
 
 export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
-  const [activeTab, setActiveTab] = useState<'overview' | 'classes' | 'newuser' | 'attendance' | 'payments' | 'members' | 'movements' | 'shared' | 'expiring' | 'settings'>(() => {
+  const [activeTab, setActiveTab] = useState<'overview' | 'classes' | 'newuser' | 'attendance' | 'payments' | 'members' | 'movements' | 'shared' | 'expiring' | 'settings' | 'qr'>(() => {
     const saved = localStorage.getItem('adminActiveTab')
     return (saved as any) || 'overview'
   })
@@ -327,7 +328,7 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
   const [editDesc, setEditDesc] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
-  const [stats, setStats] = useState({ totalMembers: 0, activeMembers: 0, totalMovements: 0, totalRecords: 0, todayCheckins: 0 })
+  const [stats, setStats] = useState({ totalMembers: 0, activeMembers: 0, totalMovements: 0, totalRecords: 0, todayCheckins: 0, todayQrCheckins: 0 })
 
   const [selectedAssessment, setSelectedAssessment] = useState<AssessmentSession | null>(null)
   const [editDateTimeModal, setEditDateTimeModal] = useState<{ open: boolean; assessment: AssessmentSession | null; date: string; time: string }>({ open: false, assessment: null, date: '', time: '' })
@@ -502,7 +503,8 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
     if (attendanceRes.data) {
       setAttendance(attendanceRes.data)
       const todayCount = attendanceRes.data.filter(a => a.check_in_time.startsWith(today)).length
-      setStats(prev => ({ ...prev, todayCheckins: todayCount }))
+      const todayQrCount = attendanceRes.data.filter(a => a.check_in_method === 'qr' && a.check_in_time.startsWith(today)).length
+      setStats(prev => ({ ...prev, todayCheckins: todayCount, todayQrCheckins: todayQrCount }))
     }
     if (subscriptionsRes.data) setSubscriptions(subscriptionsRes.data)
     if (sharedSubsRes.data) setSharedSubscriptions(sharedSubsRes.data)
@@ -2133,6 +2135,10 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
           </>
         )}
 
+        {activeTab === 'qr' && (
+          <CheckInQrScreen admin={admin} onBack={() => setActiveTab('overview')} />
+        )}
+
         {activeTab === 'attendance' && (
           <>
             <div className="flex items-center gap-3 mb-4">
@@ -2149,8 +2155,16 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
                 <div className="w-3 h-3 bg-emerald-500 rounded-full animate-pulse" />
                 <span className="text-sm text-emerald-400">Live tracking enabled</span>
               </div>
-              <p className="text-3xl font-cinzel font-bold text-t1-gold">{stats.todayCheckins}</p>
-              <p className="text-sm text-muted-foreground">Check-ins today</p>
+              <div className="flex items-end gap-6">
+                <div>
+                  <p className="text-3xl font-cinzel font-bold text-t1-gold">{stats.todayCheckins}</p>
+                  <p className="text-sm text-muted-foreground">Check-ins today</p>
+                </div>
+                <div>
+                  <p className="text-3xl font-cinzel font-bold text-emerald-400">{stats.todayQrCheckins}</p>
+                  <p className="text-sm text-muted-foreground">via QR</p>
+                </div>
+              </div>
             </div>
 
             <div className="space-y-3">
@@ -2771,6 +2785,7 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
               {[
                 { id: 'overview', icon: TrendingUp, label: 'Home' },
                 { id: 'classes', icon: Calendar, label: 'Classes' },
+                { id: 'qr', icon: QrCode, label: 'Check-in' },
                 { id: 'members', icon: Users, label: 'Members' },
                 { id: 'settings', icon: Settings, label: 'Settings' }
               ].map((item) => (
