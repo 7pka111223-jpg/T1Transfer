@@ -18,16 +18,12 @@ type View =
   | 'member-dashboard'
   | 'member-app'
 
-// Check-in payload carried by the gym's QR deep link:
-//   /?branch=<branch-uuid>  -> static printed code for a branch
-//   /?checkin=<token>       -> short-lived token code
+// Static per-branch check-in code carried by the gym's QR deep link:
+//   /?branch=<branch-uuid>
 const readCheckInPayload = (): string | null => {
   if (typeof window === 'undefined') return null
-  const params = new URLSearchParams(window.location.search)
-  const branch = params.get('branch')
-  if (branch) return `branch:${branch.trim()}`
-  const token = params.get('checkin') || params.get('t')
-  return token ? token.trim() : null
+  const branch = new URLSearchParams(window.location.search).get('branch')
+  return branch ? branch.trim() : null
 }
 
 export default function App() {

@@ -109,7 +109,8 @@ export function CheckInQrScreen({ onBack }: CheckInQrScreenProps) {
           <QrCode className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
           <p className="text-xs text-muted-foreground">
             This code is permanent for {selectedBranch ? selectedBranch.name : 'the selected branch'} — it
-            never changes, so you only need to print it once.
+            never changes, so you only need to print it once. Check-in opens 30 minutes before each session
+            starts and closes 30 minutes after it ends, and consumes one session.
           </p>
         </div>
       </div>

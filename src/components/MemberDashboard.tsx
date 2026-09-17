@@ -34,34 +34,62 @@ type MemberDashboardProps = {
   onCheckInHandled?: () => void
 }
 
-type CheckInTarget =
-  | { kind: 'branch'; branchId: string }
-  | { kind: 'token'; token: string }
-
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-// Understands the gym's QR payloads: the static per-branch deep link
-// (/?branch=<uuid>), a token deep link (/?checkin=<token>), the internal
-// "branch:<uuid>" form, or a bare branch id / token.
-const parseCheckInTarget = (value: string): CheckInTarget => {
+// Check-in opens 30 minutes before a session starts and closes 30 minutes after it ends.
+const CHECK_IN_GRACE_MS = 30 * 60 * 1000
+
+type CheckInWindow = { opensAt: Date; closesAt: Date; label: string }
+
+const formatClock = (date: Date) =>
+  date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+
+const toLocalDateStr = (date: Date) =>
+  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+
+// Accepts a bare branch id, "branch:<id>", or the QR deep link /?branch=<id>.
+const parseBranchCode = (value: string): string | null => {
   const raw = value.trim()
 
   if (raw.toLowerCase().startsWith('branch:')) {
-    return { kind: 'branch', branchId: raw.slice('branch:'.length).trim() }
+    return raw.slice('branch:'.length).trim() || null
   }
 
   try {
     const url = new URL(raw)
     const branch = url.searchParams.get('branch')
-    if (branch) return { kind: 'branch', branchId: branch.trim() }
-    const token = url.searchParams.get('checkin') || url.searchParams.get('t')
-    if (token) return { kind: 'token', token: token.trim() }
+    if (branch) return branch.trim()
   } catch {
     // not a URL - fall through
   }
 
-  if (UUID_RE.test(raw)) return { kind: 'branch', branchId: raw }
-  return { kind: 'token', token: raw }
+  return UUID_RE.test(raw) ? raw : null
+}
+
+// Today's sessions at this branch, each widened by the check-in grace period.
+const loadBranchCheckInWindows = async (branchId: string): Promise<CheckInWindow[]> => {
+  const today = new Date()
+  const dateStr = toLocalDateStr(today)
+
+  const { data } = await supabase
+    .from('group_classes')
+    .select('start_time, end_time')
+    .eq('is_active', true)
+    .eq('branch_id', branchId)
+    .eq('day_of_week', today.getDay())
+
+  return (data || [])
+    .filter((c: any) => c.start_time && c.end_time)
+    .map((c: any) => {
+      const start = new Date(`${dateStr}T${c.start_time}`)
+      const end = new Date(`${dateStr}T${c.end_time}`)
+      return {
+        opensAt: new Date(start.getTime() - CHECK_IN_GRACE_MS),
+        closesAt: new Date(end.getTime() + CHECK_IN_GRACE_MS),
+        label: `${formatClock(start)} – ${formatClock(end)}`
+      }
+    })
+    .sort((a, b) => a.opensAt.getTime() - b.opensAt.getTime())
 }
 
 type Subscription = {
@@ -804,47 +832,53 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
     }
   }
 
-  const deductSessionForBooking = async (
-    booking: ClassBooking,
+  // Consumes one session from the member's active subscription.
+  // deduct_session_for_attendance is booking-driven, so it is not used here:
+  // a QR check-in must deduct whether or not a class was booked.
+  const deductSessionForCheckIn = async (
+    bookingId: string | null,
+    sessionId: string | null,
     attendanceId: string | null,
     activeSub: any,
     nowIso: string
   ): Promise<number | null> => {
     if (activeSub.package?.type !== 'session') return activeSub.sessions_remaining
+    if (activeSub.sessions_remaining === null) return null
 
-    try {
-      const { data: rpcData, error: rpcError } = await supabase.rpc('deduct_session_for_attendance' as any, {
-        p_member_id: member.id,
-        p_booking_id: booking.id,
-        p_session_id: (booking as any)?.session_id || null,
-        p_attendance_id: attendanceId
+    const remaining = Math.max(0, activeSub.sessions_remaining - 1)
+
+    if (sharedSubscription) {
+      const { error } = await supabase
+        .from('shared_subscriptions' as any)
+        .update({ sessions_remaining: remaining })
+        .eq('id', sharedSubscription.id)
+      if (error) throw error
+
+      await supabase.from('session_deductions' as any).insert({
+        member_id: member.id,
+        source_type: 'shared',
+        source_id: sharedSubscription.id,
+        booking_id: bookingId,
+        attendance_id: attendanceId,
+        session_id: sessionId,
+        action: 'deduct',
+        created_at: nowIso
       })
-      if (rpcError) throw rpcError
-      if (rpcData && typeof rpcData.sessions_remaining === 'number') return rpcData.sessions_remaining
-      return activeSub.sessions_remaining !== null ? Math.max(0, activeSub.sessions_remaining - 1) : null
-    } catch {
-      if (sharedSubscription && activeSub.sessions_remaining !== null) {
-        const remaining = Math.max(0, activeSub.sessions_remaining - 1)
-        await supabase.from('shared_subscriptions' as any).update({ sessions_remaining: remaining }).eq('id', sharedSubscription.id)
-        await supabase.from('session_deductions' as any).insert({
-          member_id: member.id,
-          source_type: 'shared',
-          source_id: sharedSubscription.id,
-          booking_id: booking.id,
-          attendance_id: attendanceId,
-          session_id: (booking as any)?.session_id || null,
-          action: 'deduct',
-          created_at: nowIso
-        })
-        return remaining
-      }
-      if (subscription && subscription.sessions_remaining !== null) {
-        const remaining = Math.max(0, subscription.sessions_remaining - 1)
-        await supabase.from('member_subscriptions').update({ sessions_remaining: remaining }).eq('id', subscription.id)
-        return remaining
-      }
-      return activeSub.sessions_remaining
+
+      return remaining
     }
+
+    if (subscription) {
+      const { error } = await supabase
+        .from('member_subscriptions')
+        .update({ sessions_remaining: remaining })
+        .eq('id', subscription.id)
+      if (error) throw error
+
+      return remaining
+    }
+
+    return activeSub.sessions_remaining
   }
 
   const handleQrCheckIn = async (scannedValue: string) => {
@@ -854,71 +888,71 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
     setCheckInResult(null)
 
     try {
+      const branchId = parseBranchCode(scannedValue)
+      if (!branchId) throw new Error('That is not a valid Triple One check-in code.')
+
       const activeSub = subscription || sharedSubscription
       if (!activeSub) throw new Error('No active subscription found')
 
-      const target = parseCheckInTarget(scannedValue)
-      const now = new Date()
-      const nowIso = now.toISOString()
       const isSessionBased = activeSub.package?.type === 'session'
-
-      let attendanceId: string | null = null
-      let isDuplicate = false
-
-      if (target.kind === 'branch') {
-        const { data: branch } = await supabase
-          .from('branches')
-          .select('id')
-          .eq('id', target.branchId)
-          .maybeSingle()
-
-        if (!branch) throw new Error('That is not a valid Triple One check-in code.')
-
-        // Ignore repeat scans inside a short window
-        const { data: recent } = await supabase
-          .from('attendance_records')
-          .select('id')
-          .eq('member_id', member.id)
-          .gte('check_in_time', new Date(now.getTime() - 2 * 60 * 1000).toISOString())
-          .limit(1)
-
-        if (recent && recent.length > 0) {
-          isDuplicate = true
-          attendanceId = recent[0].id
-        } else {
-          const { data: inserted, error: attendanceError } = await supabase
-            .from('attendance_records')
-            .insert({
-              member_id: member.id,
-              check_in_time: nowIso,
-              check_in_method: 'qr',
-              branch_id: target.branchId
-            })
-            .select('id')
-            .single()
-
-          if (attendanceError) throw attendanceError
-          attendanceId = inserted?.id ?? null
-        }
-      } else {
-        const { data: redeemedData, error: redeemError } = await supabase.rpc('redeem_checkin_token' as any, {
-          p_token: target.token,
-          p_member_id: member.id
-        })
-
-        if (redeemError) {
-          const raw = redeemError.message || ''
-          if (raw.includes('expired_token')) throw new Error('That code has expired. Scan the code currently on the gym screen.')
-          if (raw.includes('invalid_token')) throw new Error('That is not a valid Triple One check-in code.')
-          if (raw.includes('member_inactive')) throw new Error('Your membership is not active. Please see reception.')
-          throw new Error('Check-in failed. Please try again.')
-        }
-
-        const redeemed = redeemedData as { attendance_id: string; duplicate?: boolean }
-        attendanceId = redeemed.attendance_id
-        isDuplicate = Boolean(redeemed.duplicate)
+      if (isSessionBased && (activeSub.sessions_remaining === null || activeSub.sessions_remaining <= 0)) {
+        throw new Error('No sessions remaining. Please renew at reception.')
       }
 
+      const { data: branch } = await supabase
+        .from('branches')
+        .select('id')
+        .eq('id', branchId)
+        .maybeSingle()
+
+      if (!branch) throw new Error('That is not a valid Triple One check-in code.')
+
+      // Check-in only opens around today's sessions at this branch
+      const now = new Date()
+      const windows = await loadBranchCheckInWindows(branchId)
+      const openWindow = windows.find((w) => now >= w.opensAt && now <= w.closesAt)
+
+      if (!openWindow) {
+        const upcoming = windows.find((w) => now < w.opensAt)
+        if (upcoming) {
+          throw new Error(`Check-in opens at ${formatClock(upcoming.opensAt)} for the ${upcoming.label} session.`)
+        }
+        if (windows.length > 0) {
+          throw new Error("Check-in for today's sessions has closed.")
+        }
+        throw new Error('There are no sessions at this branch today, so check-in is closed.')
+      }
+
+      const nowIso = now.toISOString()
+
+      // Ignore repeat scans inside a short window
+      const { data: recent } = await supabase
+        .from('attendance_records')
+        .select('id')
+        .eq('member_id', member.id)
+        .gte('check_in_time', new Date(now.getTime() - 2 * 60 * 1000).toISOString())
+        .limit(1)
+
+      const isDuplicate = Boolean(recent && recent.length > 0)
+      let attendanceId: string | null = isDuplicate ? recent![0].id : null
+
+      if (!isDuplicate) {
+        const { data: inserted, error: attendanceError } = await supabase
+          .from('attendance_records')
+          .insert({
+            member_id: member.id,
+            check_in_time: nowIso,
+            check_in_method: 'qr',
+            branch_id: branchId
+          })
+          .select('id')
+          .single()
+
+        if (attendanceError) throw attendanceError
+        attendanceId = inserted?.id ?? null
+      }
+
+      // If a booked class is inside its own window, mark it attended too
       const { data: bookings } = await supabase
         .from('class_bookings')
         .select('*, group_class:group_classes(*)')
@@ -927,9 +961,6 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
         .eq('status', 'booked')
 
       const classBooking = (bookings || []).find((b) => getCheckInWindow(b).isOpen)
-
-      let newSessionsRemaining = activeSub.sessions_remaining
-      let warning: string | null = null
 
       if (classBooking) {
         const { data: alreadyAttended } = await supabase
@@ -955,19 +986,27 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
               })
               .eq('id', attendanceId)
           }
-
-          if (isSessionBased) {
-            newSessionsRemaining = await deductSessionForBooking(classBooking, attendanceId, activeSub, nowIso)
-            if (sharedSubscription) {
-              setSharedSubscription(prev => prev ? { ...prev, sessions_remaining: newSessionsRemaining } : null)
-            } else if (subscription) {
-              setSubscription(prev => prev ? { ...prev, sessions_remaining: newSessionsRemaining } : null)
-            }
-          }
         }
-      } else {
-        warning = 'Attendance recorded. No class was in its check-in window.'
       }
+
+      // A scan always consumes a session, whether or not a class was booked
+      let newSessionsRemaining = activeSub.sessions_remaining
+      if (isSessionBased && !isDuplicate) {
+        newSessionsRemaining = await deductSessionForCheckIn(
+          classBooking?.id ?? null,
+          (classBooking as any)?.session_id ?? null,
+          attendanceId,
+          activeSub,
+          nowIso
+        )
+        if (sharedSubscription) {
+          setSharedSubscription(prev => prev ? { ...prev, sessions_remaining: newSessionsRemaining } : null)
+        } else if (subscription) {
+          setSubscription(prev => prev ? { ...prev, sessions_remaining: newSessionsRemaining } : null)
+        }
+      }
+
+      let warning: string | null = null
 
       const endDate = activeSub.end_date ? new Date(activeSub.end_date) : null
       const today = new Date()
