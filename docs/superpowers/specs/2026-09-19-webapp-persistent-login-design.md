@@ -12,22 +12,23 @@ Members and admins currently sign in with a phone/PIN on every app open because 
 
 ## 1. Session store
 
-- One `localStorage` key: `t1_session`.
-- Value: JSON `{type: "member" | "admin", id: "<uuid>"}` — the row id in the table that login queries.
-- Never stored: PIN, phone, names, or any personal data.
+- The pre-existing keys `t1_member` / `t1_admin` hold the login snapshot object; `t1_view` holds the last view. No new keys were introduced.
+- The member snapshot is sanitized at login: all `MemberData` fields **except `pin`**. The admin snapshot never contained secrets (`{id, full_name, email}` only).
+- Never stored: PIN. (Snapshots written before this change may still contain a member PIN until the next login overwrites them; nothing reads it.)
 
 ## 2. Boot restore (in `App.tsx`)
 
-On mount, read `t1_session`:
-- Absent or unparseable → landing page, exactly as today.
-- Present → fetch that row from the same table the login uses. If found (and not deactivated, where the schema has such a flag) → render the member/admin dashboard directly. If the row is missing or deactivated → delete the key, show landing.
+The existing synchronous restore from `t1_member` / `t1_admin` / `t1_view` is unchanged, followed by a new validation effect:
+- For each stored session, fetch its row by id (`members` → `id,status`; `admins` → `id`). Missing row, member `status === 'pending'`, or malformed id → delete that key and clear the matching state.
+- Transport failure → snapshot kept untouched for retry on next open.
+- Afterwards (unless a QR check-in payload is pending, which owns the view): no sessions left → clear `t1_view` and show landing; exactly one side left → its dashboard; both kept → view untouched.
 
-One query per app open. A deleted or deactivated account can never boot into a broken dashboard.
+At most two lightweight queries per app open. A deleted or deactivated account can never boot into a broken dashboard.
 
 ## 3. Login / logout changes
 
-- After a successful PIN check (member login, admin login — whichever screens perform them, including any newer `AuthPage`/`MemberApp` entry points if they own a login), write `t1_session` before navigating to the dashboard.
-- Both Logout paths (member dashboard, admin header) delete `t1_session` first, then navigate to landing as today.
+- `MemberLogin` passes an explicit PIN-free snapshot to `onLogin` (every `MemberData` field except `pin`); persistence flows through the existing state→`localStorage` effects unchanged.
+- Both Logout paths already deleted all three keys — unchanged.
 - No other login, routing, or dashboard logic changes.
 
 ## 4. Edge cases
