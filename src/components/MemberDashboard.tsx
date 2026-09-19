@@ -185,6 +185,8 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
   const [dataLoaded, setDataLoaded] = useState(false)
   const [subscription, setSubscription] = useState<Subscription | null>(null)
   const [sharedSubscription, setSharedSubscription] = useState<any>(null)
+  const [sharedPoolUsage, setSharedPoolUsage] = useState<{ id: string; member_id: string; full_name: string; used: number }[]>([])
+  const [poolUsageLoading, setPoolUsageLoading] = useState(false)
   const [branchName, setBranchName] = useState<string | null>(null)
   const [latestMetrics, setLatestMetrics] = useState<BodyMetric | null>(null)
   const [attendanceCount, setAttendanceCount] = useState(0)
@@ -236,6 +238,48 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
   useEffect(() => {
     setSubscriptionStatus(getSubscriptionStatus(subscription))
   }, [subscription])
+
+  // Pool usage per athlete for shared subscriptions (same session_deductions
+  // ledger the admin panel aggregates). Fails soft — section hides on error.
+  useEffect(() => {
+    const loadPoolUsage = async () => {
+      if (!sharedSubscription?.id) {
+        setSharedPoolUsage([])
+        return
+      }
+      setPoolUsageLoading(true)
+      try {
+        const [memRes, usageRes] = await Promise.all([
+          supabase
+            .from('shared_subscription_members' as any)
+            .select('member:members(id, member_id, full_name)')
+            .eq('shared_subscription_id', sharedSubscription.id),
+          supabase
+            .from('session_deductions' as any)
+            .select('member_id, action')
+            .eq('source_type', 'shared')
+            .eq('source_id', sharedSubscription.id),
+        ])
+        const agg: Record<string, number> = {}
+        if (!usageRes.error && usageRes.data) {
+          for (const row of usageRes.data as any[]) {
+            agg[row.member_id] = (agg[row.member_id] || 0) + (row.action === 'deduct' ? 1 : -1)
+          }
+        }
+        const rows = (!memRes.error && memRes.data ? (memRes.data as any[]) : [])
+          .map(r => r.member)
+          .filter(Boolean)
+          .map((m: any) => ({ id: m.id, member_id: m.member_id, full_name: m.full_name, used: Math.max(0, agg[m.id] || 0) }))
+          .sort((a, b) => b.used - a.used)
+        setSharedPoolUsage(rows)
+      } catch {
+        setSharedPoolUsage([])
+      } finally {
+        setPoolUsageLoading(false)
+      }
+    }
+    loadPoolUsage()
+  }, [sharedSubscription?.id])
 
   // Refresh member data when profile tab is opened
   useEffect(() => {
@@ -1490,6 +1534,41 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
                           </span>
                         </div>
                       </div>
+
+                      {isShared && sharedPoolUsage.length > 0 && (
+                        <div className="relative z-10 mt-5 border-t border-zinc-800/50 pt-4">
+                          <div className="flex items-center justify-between mb-3">
+                            <span className="text-sm font-semibold text-t1-cream flex items-center gap-2">
+                              <Users className="w-4 h-4 text-t1-gold" />
+                              Pool usage by athlete
+                            </span>
+                            {poolUsageLoading && <span className="text-xs text-zinc-500">Loading…</span>}
+                          </div>
+                          <div className="space-y-2">
+                            {sharedPoolUsage.map(u => {
+                              const maxUsed = Math.max(1, ...sharedPoolUsage.map(x => x.used))
+                              const isMe = u.id === member.id
+                              return (
+                                <div key={u.id} className={`rounded-xl px-3 py-2 ${isMe ? 'bg-t1-gold/10 border border-t1-gold/30' : 'bg-zinc-800/40 border border-zinc-800/50'}`}>
+                                  <div className="flex items-center justify-between text-sm">
+                                    <span className="font-semibold text-t1-cream">
+                                      {u.full_name}
+                                      {isMe && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full bg-t1-gold/20 text-t1-gold font-bold">YOU</span>}
+                                    </span>
+                                    <span className="text-xs text-zinc-400">{u.used} session{u.used === 1 ? '' : 's'}</span>
+                                  </div>
+                                  <div className="mt-1.5 h-1.5 bg-zinc-800/80 rounded-full overflow-hidden">
+                                    <div
+                                      className="h-full bg-gradient-to-r from-t1-red to-t1-gold"
+                                      style={{ width: `${(u.used / maxUsed) * 100}%` }}
+                                    />
+                                  </div>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )
                 })()}
