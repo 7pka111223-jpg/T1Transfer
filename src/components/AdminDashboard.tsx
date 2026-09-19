@@ -358,6 +358,22 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
   const [leadStatusFilter, setLeadStatusFilter] = useState<'all' | LeadStatus>('all')
   const [leadSort, setLeadSort] = useState<'newest' | 'oldest' | 'preferred' | 'name'>('newest')
   const [updatingLeadId, setUpdatingLeadId] = useState<string | null>(null)
+  const [editLeadForm, setEditLeadForm] = useState({ full_name: '', phone: '', email: '', branch: '', preferred_date: '', preferred_time: '' })
+  const [isSavingLead, setIsSavingLead] = useState(false)
+
+  // Keep the editable conversion form in sync with the selected lead.
+  useEffect(() => {
+    if (selectedAssessment) {
+      setEditLeadForm({
+        full_name: selectedAssessment.full_name || '',
+        phone: selectedAssessment.phone || '',
+        email: selectedAssessment.email || '',
+        branch: selectedAssessment.branch || '',
+        preferred_date: selectedAssessment.preferred_date || '',
+        preferred_time: selectedAssessment.preferred_time || '',
+      })
+    }
+  }, [selectedAssessment?.id])
   const [newUserForm, setNewUserForm] = useState({
     level: 'Warrior',
     date_of_birth: '',
@@ -602,6 +618,13 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
 
     setIsSubmitting(true)
     try {
+      // Persist any lead edits first so the member is created from current values.
+      const saved = await handleSaveLeadEdits()
+      if (!saved) {
+        setIsSubmitting(false)
+        return
+      }
+      const lead = { ...selectedAssessment, ...editLeadForm, full_name: editLeadForm.full_name.trim(), phone: editLeadForm.phone.trim() }
       const memberId = await generateMemberId()
       
       const emergencyContact = newUserForm.emergency_contact_name 
@@ -612,25 +635,30 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
           })
         : null
 
-      // Look up branch_id if branch name is provided
-      let branchId = null
-      if (selectedAssessment.branch) {
-        const { data: branchData } = await supabase
-          .from('branches')
-          .select('id')
-          .eq('name', selectedAssessment.branch)
-          .single()
-        
-        if (branchData) {
-          branchId = branchData.id
+      // assessment_sessions.branch stores a branch id — use it directly when known,
+      // otherwise fall back to a name lookup for legacy rows.
+      let branchId: string | null = null
+      if (lead.branch) {
+        if (branches.some(b => b.id === lead.branch)) {
+          branchId = lead.branch
+        } else {
+          const { data: branchData } = await supabase
+            .from('branches')
+            .select('id')
+            .eq('name', lead.branch)
+            .single()
+
+          if (branchData) {
+            branchId = (branchData as any).id
+          }
         }
       }
 
       const { error: memberError } = await supabase.from('members').insert({
         member_id: memberId,
-        full_name: selectedAssessment.full_name,
-        phone: selectedAssessment.phone,
-        email: selectedAssessment.email,
+        full_name: lead.full_name,
+        phone: lead.phone,
+        email: editLeadForm.email.trim() || null,
         pin: null,
         level: newUserForm.level,
         status: 'pending',
@@ -894,6 +922,43 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
         default: return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       }
     })
+
+  // assessment_sessions.branch stores a branch *id* — resolve it for display.
+  const resolveBranchName = (branchRef: string | null): string | null => {
+    if (!branchRef) return null
+    return branches.find(b => b.id === branchRef)?.name || null
+  }
+
+  const handleSaveLeadEdits = async (): Promise<boolean> => {
+    if (!selectedAssessment) return false
+    if (!editLeadForm.full_name.trim() || !editLeadForm.phone.trim()) {
+      alert('Name and phone are required.')
+      return false
+    }
+    setIsSavingLead(true)
+    try {
+      const payload = {
+        full_name: editLeadForm.full_name.trim(),
+        phone: editLeadForm.phone.trim(),
+        email: editLeadForm.email.trim() || null,
+        branch: editLeadForm.branch || null,
+        preferred_date: editLeadForm.preferred_date || null,
+        preferred_time: editLeadForm.preferred_time || null,
+      }
+      const { error } = await supabase.from('assessment_sessions').update(payload).eq('id', selectedAssessment.id)
+      if (error) throw error
+      const updated = { ...selectedAssessment, ...payload }
+      setSelectedAssessment(updated)
+      setAssessments(list => list.map(a => a.id === updated.id ? { ...a, ...payload } : a))
+      return true
+    } catch (err: any) {
+      console.error('Failed to save lead:', err)
+      alert(`Could not save lead changes:\n\n${err?.message || JSON.stringify(err, null, 2)}`)
+      return false
+    } finally {
+      setIsSavingLead(false)
+    }
+  }
 
   const handleExportAttendance = async () => {
     if (!exportFrom || !exportTo) {
@@ -1795,31 +1860,84 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
 
             {selectedAssessment ? (
               <div className="bg-secondary rounded-2xl p-5 border border-t1-red/30">
-                <h3 className="font-cinzel font-semibold mb-4">Complete Registration for {selectedAssessment.full_name}</h3>
-                
+                <h3 className="font-cinzel font-semibold mb-1">Complete Registration for {selectedAssessment.full_name}</h3>
+                <p className="text-xs text-muted-foreground mb-4">Lead details are editable — corrections save to the lead and carry into the new member.</p>
+
                 <div className="grid grid-cols-2 gap-4 mb-6 p-4 bg-t1-black/50 rounded-xl">
-                  <div>
-                    <p className="text-xs text-muted-foreground">Name</p>
-                    <p className="font-semibold">{selectedAssessment.full_name}</p>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Name *</Label>
+                    <Input
+                      value={editLeadForm.full_name}
+                      onChange={(e) => setEditLeadForm(prev => ({ ...prev, full_name: e.target.value }))}
+                      className="h-11 bg-t1-black border-t1-red/20 text-t1-cream rounded-xl"
+                    />
                   </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">Phone</p>
-                    <p className="font-semibold">{selectedAssessment.phone}</p>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Phone *</Label>
+                    <Input
+                      value={editLeadForm.phone}
+                      onChange={(e) => setEditLeadForm(prev => ({ ...prev, phone: e.target.value }))}
+                      className="h-11 bg-t1-black border-t1-red/20 text-t1-cream rounded-xl"
+                    />
                   </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">Email</p>
-                    <p className="font-semibold">{selectedAssessment.email || 'N/A'}</p>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Email</Label>
+                    <Input
+                      value={editLeadForm.email}
+                      onChange={(e) => setEditLeadForm(prev => ({ ...prev, email: e.target.value }))}
+                      placeholder="No email"
+                      className="h-11 bg-t1-black border-t1-red/20 text-t1-cream rounded-xl"
+                    />
                   </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">Branch</p>
-                    <p className="font-semibold flex items-center gap-1">
-                      <MapPin className="w-3.5 h-3.5 text-t1-gold" />
-                      <span className="text-t1-gold">{selectedAssessment.branch || 'Not specified'}</span>
-                    </p>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Branch</Label>
+                    <select
+                      value={branches.some(b => b.id === editLeadForm.branch) || !editLeadForm.branch ? editLeadForm.branch : '__unknown__'}
+                      onChange={(e) => setEditLeadForm(prev => ({ ...prev, branch: e.target.value === '__unknown__' ? prev.branch : e.target.value }))}
+                      className="w-full h-11 bg-t1-black border border-t1-red/20 text-t1-gold rounded-xl px-3"
+                    >
+                      <option value="">Not specified</option>
+                      {branches.map(b => (
+                        <option key={b.id} value={b.id}>{b.name}</option>
+                      ))}
+                      {editLeadForm.branch && !branches.some(b => b.id === editLeadForm.branch) && (
+                        <option value="__unknown__">Unknown branch ({editLeadForm.branch.slice(0, 8)}…) — pick one to fix</option>
+                      )}
+                    </select>
                   </div>
-                  <div className="col-span-2">
-                    <p className="text-xs text-muted-foreground">Preferred Date/Time</p>
-                    <p className="font-semibold">{selectedAssessment.preferred_date || 'N/A'} {selectedAssessment.preferred_time ? `at ${selectedAssessment.preferred_time}` : ''}</p>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Preferred Date</Label>
+                    <Input
+                      type="date"
+                      value={editLeadForm.preferred_date}
+                      onChange={(e) => setEditLeadForm(prev => ({ ...prev, preferred_date: e.target.value }))}
+                      className="h-11 bg-t1-black border-t1-red/20 text-t1-cream rounded-xl"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Preferred Time</Label>
+                    <Input
+                      type="time"
+                      value={editLeadForm.preferred_time}
+                      onChange={(e) => setEditLeadForm(prev => ({ ...prev, preferred_time: e.target.value }))}
+                      className="h-11 bg-t1-black border-t1-red/20 text-t1-cream rounded-xl"
+                    />
+                  </div>
+                  <div className="col-span-2 flex items-center gap-2">
+                    <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                      <Clock className="w-3 h-3" />
+                      <span>Booked: {formatBookingTime(selectedAssessment.created_at)}</span>
+                    </div>
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${leadStatusStyle(getLeadStatus(selectedAssessment))}`}>
+                      {LEAD_STATUS_OPTIONS.find(o => o.value === getLeadStatus(selectedAssessment))?.label}
+                    </span>
+                    <button
+                      onClick={handleSaveLeadEdits}
+                      disabled={isSavingLead || isSubmitting}
+                      className="ml-auto text-xs px-3 py-1.5 rounded-lg bg-white/5 border border-t1-red/20 hover:bg-t1-red/10 transition-colors disabled:opacity-50"
+                    >
+                      {isSavingLead ? 'Saving...' : 'Save lead changes'}
+                    </button>
                   </div>
                 </div>
 
@@ -2001,7 +2119,7 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
                           {assessment.branch && (
                             <div className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-t1-gold/20 border border-t1-gold/30">
                               <MapPin className="w-3 h-3 text-t1-gold" />
-                              <span className="text-xs text-t1-gold font-semibold">{branches.find(b => b.id === assessment.branch)?.name || assessment.branch}</span>
+                              <span className="text-xs text-t1-gold font-semibold">{resolveBranchName(assessment.branch) || 'Unknown branch'}</span>
                             </div>
                           )}
                           <div className="flex items-center gap-1">
