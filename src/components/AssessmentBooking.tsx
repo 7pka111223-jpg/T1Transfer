@@ -125,7 +125,8 @@ export function AssessmentBooking({ onBack, onSuccess }: AssessmentBookingProps)
           branch: formData.branch,
           preferred_date: formatDateForDb(selectedDate),
           preferred_time: selectedTime,
-          status: 'pending'
+          status: 'pending',
+          lead_status: 'not_contacted'
         })
 
       if (insertError) throw insertError

@@ -42,6 +42,15 @@ type Member = {
   branch_id: string | null
 }
 
+type LeadStatus = 'not_contacted' | 'contacted' | 'no_answer' | 'booked'
+
+const LEAD_STATUS_OPTIONS: { value: LeadStatus; label: string }[] = [
+  { value: 'not_contacted', label: 'Not contacted' },
+  { value: 'contacted', label: 'Contacted' },
+  { value: 'no_answer', label: 'No answer' },
+  { value: 'booked', label: 'Booked' },
+]
+
 type AssessmentSession = {
   id: string
   full_name: string
@@ -54,6 +63,7 @@ type AssessmentSession = {
   notes: string | null
   created_at: string
   confirmed: boolean
+  lead_status?: string | null
 }
 
 type AttendanceRecord = {
@@ -344,6 +354,10 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
 
   const [selectedAssessment, setSelectedAssessment] = useState<AssessmentSession | null>(null)
   const [editDateTimeModal, setEditDateTimeModal] = useState<{ open: boolean; assessment: AssessmentSession | null; date: string; time: string }>({ open: false, assessment: null, date: '', time: '' })
+  const [leadSearch, setLeadSearch] = useState('')
+  const [leadStatusFilter, setLeadStatusFilter] = useState<'all' | LeadStatus>('all')
+  const [leadSort, setLeadSort] = useState<'newest' | 'oldest' | 'preferred' | 'name'>('newest')
+  const [updatingLeadId, setUpdatingLeadId] = useState<string | null>(null)
   const [newUserForm, setNewUserForm] = useState({
     level: 'Warrior',
     date_of_birth: '',
@@ -511,7 +525,7 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
       setRecords(recordsRes.data)
       setStats(prev => ({ ...prev, totalRecords: recordsRes.data.length }))
     }
-    if (assessmentsRes.data) setAssessments(assessmentsRes.data.filter(a => a.status === 'pending'))
+    if (assessmentsRes.data) setAssessments(assessmentsRes.data.filter(a => a.status === 'pending').map(a => ({ ...a, lead_status: (a as any).lead_status || 'not_contacted' })))
     if (attendanceRes.data) {
       setAttendance(attendanceRes.data)
       const todayCount = attendanceRes.data.filter(a => a.check_in_time.startsWith(today)).length
@@ -632,7 +646,7 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
 
       if (memberError) throw memberError
 
-      await supabase.from('assessment_sessions').update({ status: 'converted' }).eq('id', selectedAssessment.id)
+      await supabase.from('assessment_sessions').update({ status: 'converted', lead_status: 'booked' }).eq('id', selectedAssessment.id)
 
       setSelectedAssessment(null)
       setNewUserForm({ level: 'Warrior', date_of_birth: '', gender: '', training_goal: '', fitness_level: '', medical_notes: '', emergency_contact_name: '', emergency_contact_phone: '', emergency_contact_relationship: '' })
@@ -821,6 +835,65 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
     const hour12 = h % 12 || 12
     return `${hour12}:${minutes} ${ampm}`
   }
+
+  const getLeadStatus = (a: AssessmentSession): LeadStatus => {
+    const s = (a.lead_status || 'not_contacted') as string
+    return (['not_contacted', 'contacted', 'no_answer', 'booked'] as LeadStatus[]).includes(s as LeadStatus)
+      ? (s as LeadStatus)
+      : 'not_contacted'
+  }
+
+  const leadStatusStyle = (s: LeadStatus) => {
+    switch (s) {
+      case 'contacted': return 'bg-blue-500/20 text-blue-400 border-blue-500/30'
+      case 'no_answer': return 'bg-amber-500/20 text-amber-400 border-amber-500/30'
+      case 'booked': return 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+      default: return 'bg-zinc-500/20 text-zinc-400 border-zinc-500/30'
+    }
+  }
+
+  const formatBookingTime = (dateStr: string) => {
+    const d = new Date(dateStr)
+    if (isNaN(d.getTime())) return 'Unknown'
+    return `${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} • ${d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`
+  }
+
+  const handleLeadStatusChange = async (assessment: AssessmentSession, next: LeadStatus) => {
+    const prev = getLeadStatus(assessment)
+    if (prev === next) return
+    setUpdatingLeadId(assessment.id)
+    setAssessments(list => list.map(a => a.id === assessment.id ? { ...a, lead_status: next } : a))
+    try {
+      const { error } = await supabase.from('assessment_sessions').update({ lead_status: next }).eq('id', assessment.id)
+      if (error) throw error
+    } catch (err: any) {
+      console.error('Failed to update lead status:', err)
+      setAssessments(list => list.map(a => a.id === assessment.id ? { ...a, lead_status: prev } : a))
+      alert('Could not save lead status. If this persists, run supabase/migrations/20260919_lead_status.sql in your Supabase project.')
+    } finally {
+      setUpdatingLeadId(null)
+    }
+  }
+
+  const filteredLeads = assessments
+    .filter(a => {
+      if (leadStatusFilter !== 'all' && getLeadStatus(a) !== leadStatusFilter) return false
+      const q = leadSearch.trim().toLowerCase()
+      if (!q) return true
+      return a.full_name.toLowerCase().includes(q) || a.phone.toLowerCase().includes(q) || (a.email || '').toLowerCase().includes(q)
+    })
+    .sort((a, b) => {
+      switch (leadSort) {
+        case 'oldest': return new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+        case 'name': return a.full_name.localeCompare(b.full_name)
+        case 'preferred': {
+          const ad = a.preferred_date ? new Date(`${a.preferred_date}T${a.preferred_time || '00:00'}`).getTime() : Number.MAX_SAFE_INTEGER
+          const bd = b.preferred_date ? new Date(`${b.preferred_date}T${b.preferred_time || '00:00'}`).getTime() : Number.MAX_SAFE_INTEGER
+          return ad - bd
+        }
+        default: return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      }
+    })
 
   const handleExportAttendance = async () => {
     if (!exportFrom || !exportTo) {
@@ -1567,13 +1640,13 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
                 </div>
                 <div className="space-y-3">
                   {assessments.slice(0, 3).map(a => (
-                    <div key={a.id} className="flex items-center justify-between py-2 border-b border-t1-red/10 last:border-0">
+                    <div key={a.id} className="flex items-center justify-between py-2 border-b border-t1-red/10 last:border-0 gap-2">
                       <div>
                         <p className="font-semibold text-sm">{a.full_name}</p>
-                        <p className="text-xs text-muted-foreground">{a.phone}</p>
+                        <p className="text-xs text-muted-foreground">{a.phone} • Booked {formatBookingTime(a.created_at)}</p>
                       </div>
-                      <span className="px-2 py-1 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-400">
-                        Pending
+                      <span className={`px-2 py-1 rounded-full text-[10px] font-bold border ${leadStatusStyle(getLeadStatus(a))}`}>
+                        {LEAD_STATUS_OPTIONS.find(o => o.value === getLeadStatus(a))?.label || 'Pending'}
                       </span>
                     </div>
                   ))}
@@ -1874,15 +1947,54 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
               </div>
             ) : (
               <div className="space-y-3">
-                {assessments.map(assessment => (
+                <div className="bg-secondary rounded-2xl p-4 border border-t1-red/10 space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <div className="relative">
+                      <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                      <Input
+                        value={leadSearch}
+                        onChange={(e) => setLeadSearch(e.target.value)}
+                        placeholder="Search name, phone, email..."
+                        className="h-10 pl-9 bg-t1-black border-t1-red/20 text-t1-cream rounded-xl"
+                      />
+                    </div>
+                    <select
+                      value={leadStatusFilter}
+                      onChange={(e) => setLeadStatusFilter(e.target.value as 'all' | LeadStatus)}
+                      className="h-10 bg-t1-black border border-t1-red/20 text-t1-cream rounded-xl px-3"
+                    >
+                      <option value="all">All statuses ({assessments.length})</option>
+                      {LEAD_STATUS_OPTIONS.map(o => (
+                        <option key={o.value} value={o.value}>{o.label} ({assessments.filter(a => getLeadStatus(a) === o.value).length})</option>
+                      ))}
+                    </select>
+                    <select
+                      value={leadSort}
+                      onChange={(e) => setLeadSort(e.target.value as 'newest' | 'oldest' | 'preferred' | 'name')}
+                      className="h-10 bg-t1-black border border-t1-red/20 text-t1-cream rounded-xl px-3"
+                    >
+                      <option value="newest">Sort: Newest booking first</option>
+                      <option value="oldest">Sort: Oldest booking first</option>
+                      <option value="preferred">Sort: Preferred session date</option>
+                      <option value="name">Sort: Name A–Z</option>
+                    </select>
+                  </div>
+                  <p className="text-xs text-muted-foreground">Showing {filteredLeads.length} of {assessments.length} leads</p>
+                </div>
+                {filteredLeads.map(assessment => {
+                  const ls = getLeadStatus(assessment)
+                  return (
                   <div key={assessment.id} className={`bg-secondary rounded-2xl p-4 border ${assessment.confirmed ? 'border-emerald-500/30' : 'border-t1-red/10'}`}>
                     <div className="flex items-start justify-between gap-4">
                       <div className="flex-1">
-                        <div className="flex items-center gap-2 mb-2">
+                        <div className="flex items-center gap-2 mb-2 flex-wrap">
                           <div className={`w-8 h-8 rounded-full flex items-center justify-center ${assessment.confirmed ? 'bg-gradient-to-br from-emerald-500/30 to-emerald-600/30' : 'bg-gradient-to-br from-amber-500/30 to-amber-600/30'}`}>
                             <UserPlus className={`w-4 h-4 ${assessment.confirmed ? 'text-emerald-400' : 'text-amber-400'}`} />
                           </div>
                           <h3 className="font-cinzel font-semibold text-base">{assessment.full_name}</h3>
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${leadStatusStyle(ls)}`}>
+                            {LEAD_STATUS_OPTIONS.find(o => o.value === ls)?.label}
+                          </span>
                         </div>
                         <p className="text-sm text-muted-foreground mb-2">{assessment.phone} • {assessment.email || 'No email'}</p>
                         <div className="flex items-center gap-2 flex-wrap">
@@ -1898,11 +2010,29 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
                               {assessment.preferred_date || 'No date'} {assessment.preferred_time ? `at ${assessment.preferred_time}` : ''}
                             </span>
                           </div>
+                          <div className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/5 border border-white/10">
+                            <Clock className="w-3 h-3 text-muted-foreground" />
+                            <span className="text-xs text-muted-foreground">Booked: {formatBookingTime(assessment.created_at)}</span>
+                          </div>
                           {assessment.confirmed && (
                             <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-400">
                               Confirmed
                             </span>
                           )}
+                        </div>
+                        <div className="flex items-center gap-2 mt-3">
+                          <Label className="text-xs text-muted-foreground">Status:</Label>
+                          <select
+                            value={ls}
+                            disabled={updatingLeadId === assessment.id}
+                            onChange={(e) => handleLeadStatusChange(assessment, e.target.value as LeadStatus)}
+                            className="h-9 bg-t1-black border border-t1-red/20 text-t1-cream rounded-lg px-2 text-xs"
+                          >
+                            {LEAD_STATUS_OPTIONS.map(o => (
+                              <option key={o.value} value={o.value}>{o.label}</option>
+                            ))}
+                          </select>
+                          {updatingLeadId === assessment.id && <span className="text-xs text-muted-foreground">Saving...</span>}
                         </div>
                       </div>
                       
@@ -1981,11 +2111,12 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
                       </div>
                     </div>
                   </div>
-                ))}
-                {assessments.length === 0 && (
+                  );
+                })}
+                {filteredLeads.length === 0 && (
                   <div className="text-center py-12">
                     <UserPlus className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
-                    <p className="text-muted-foreground">No pending leads</p>
+                    <p className="text-muted-foreground">{assessments.length === 0 ? 'No pending leads' : 'No leads match the current search / filter'}</p>
                   </div>
                 )}
               </div>
