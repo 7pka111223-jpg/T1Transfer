@@ -67,7 +67,24 @@ export function MemberLogin({ onBack, onLogin, onActivate }: MemberLoginProps) {
         return
       }
 
-      onLogin(data)
+      // Pass an explicit snapshot WITHOUT the PIN — this object is persisted
+      // to localStorage by App, and secrets must never touch client storage.
+      onLogin({
+        id: data.id,
+        member_id: data.member_id,
+        full_name: data.full_name,
+        phone: data.phone,
+        email: data.email,
+        date_of_birth: data.date_of_birth,
+        gender: data.gender,
+        status: data.status,
+        level: data.level,
+        profile_image_url: data.profile_image_url,
+        medical_notes: data.medical_notes,
+        emergency_contact: data.emergency_contact,
+        loyalty_points: data.loyalty_points,
+        branch_id: data.branch_id,
+      })
     } catch (err) {
       setError('Login failed. Please try again.')
       console.error(err)

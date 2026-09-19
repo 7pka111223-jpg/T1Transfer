@@ -7,6 +7,7 @@ import { AdminLogin, AdminData } from './components/AdminLogin'
 import { AdminDashboard } from './components/AdminDashboard'
 import { MemberDashboard } from './components/MemberDashboard'
 import { MemberApp } from './components/MemberApp'
+import { supabase } from './lib/supabase'
 
 type View = 
   | 'landing'
@@ -140,6 +141,70 @@ export default function App() {
       localStorage.removeItem('t1_admin')
     }
   }, [currentAdmin])
+
+  // Re-validate restored sessions against the database on boot. A stored id
+  // that no longer exists (or is pending) is cleared and falls back to
+  // landing, so deleted/deactivated accounts can never boot into a
+  // dashboard. Transport failures leave the snapshot untouched for retry.
+  useEffect(() => {
+    let cancelled = false
+    const readId = (key: string): string | null => {
+      try {
+        const raw = localStorage.getItem(key)
+        if (!raw) return null
+        const id = (JSON.parse(raw) as { id?: unknown }).id
+        return typeof id === 'string' && id.length > 0 ? id : null
+      } catch {
+        return null
+      }
+    }
+    const validateSessions = async () => {
+      const memberId = readId('t1_member')
+      if (localStorage.getItem('t1_member') && !memberId) {
+        localStorage.removeItem('t1_member')
+        if (!cancelled) setCurrentMember(null)
+      } else if (memberId) {
+        try {
+          const { data, error } = await supabase.from('members').select('id,status').eq('id', memberId).single()
+          if (error || !data || data.status === 'pending') {
+            localStorage.removeItem('t1_member')
+            if (!cancelled) setCurrentMember(null)
+          }
+        } catch {
+          // Transport failure: keep the snapshot for retry on next open.
+        }
+      }
+      const adminId = readId('t1_admin')
+      if (localStorage.getItem('t1_admin') && !adminId) {
+        localStorage.removeItem('t1_admin')
+        if (!cancelled) setCurrentAdmin(null)
+      } else if (adminId) {
+        try {
+          const { data, error } = await supabase.from('admins').select('id').eq('id', adminId).single()
+          if (error || !data) {
+            localStorage.removeItem('t1_admin')
+            if (!cancelled) setCurrentAdmin(null)
+          }
+        } catch {
+          // Transport failure: keep the snapshot for retry on next open.
+        }
+      }
+      // The QR check-in flow owns the view while its payload is pending.
+      if (cancelled || pendingCheckIn) return
+      const m = localStorage.getItem('t1_member')
+      const a = localStorage.getItem('t1_admin')
+      if (!m && !a) {
+        localStorage.removeItem('t1_view')
+        setCurrentView('landing')
+      } else if (!m) {
+        setCurrentView('admin-dashboard')
+      } else if (!a) {
+        setCurrentView('member-dashboard')
+      }
+    }
+    validateSessions()
+    return () => { cancelled = true }
+  }, [])
 
   const handleMemberLogin = (member: MemberData) => {
     setCurrentMember(member)
