@@ -24,6 +24,13 @@ create table if not exists public.assessment_sessions (
   lead_status text not null default 'not_contacted'
 );
 
+-- On databases where assessment_sessions already existed, the CREATE TABLE IF
+-- NOT EXISTS above is a no-op, so lead_status was never actually added and the
+-- backfill below failed with 42703 (column does not exist), aborting the whole
+-- migration. Add the column explicitly so this works on existing projects too.
+alter table public.assessment_sessions
+  add column if not exists lead_status text not null default 'not_contacted';
+
 -- Backfill any legacy NULLs (e.g. rows written before defaults existed).
 update public.assessment_sessions
   set lead_status = 'not_contacted'
