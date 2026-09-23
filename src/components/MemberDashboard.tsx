@@ -881,65 +881,6 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
     }
   }
 
-  // Consumes one session from the member's active subscription.
-  // deduct_session_for_attendance is booking-driven, so it is not used here:
-  // a QR check-in must deduct whether or not a class was booked.
-  const deductSessionForCheckIn = async (
-    attendanceId: string | null,
-    activeSub: any,
-    nowIso: string
-  ): Promise<number | null> => {
-    if (activeSub.package?.type !== 'session') return activeSub.sessions_remaining
-    if (activeSub.sessions_remaining === null) return null
-
-    const remaining = Math.max(0, activeSub.sessions_remaining - 1)
-
-    // Bill whichever pool the active subscription actually came from.
-    if (!subscription && sharedSubscription) {
-      const { error } = await supabase
-        .from('shared_subscriptions' as any)
-        .update({ sessions_remaining: remaining })
-        .eq('id', sharedSubscription.id)
-      if (error) throw error
-
-      // Audit row; a ledger failure must not fail the check-in itself.
-      await supabase.from('session_deductions' as any).insert({
-        member_id: member.id,
-        source_type: 'shared',
-        source_id: sharedSubscription.id,
-        attendance_id: attendanceId,
-        amount: 1,
-        action: 'deduct',
-        created_at: nowIso
-      })
-
-      return remaining
-    }
-
-    if (subscription) {
-      const { error } = await supabase
-        .from('member_subscriptions')
-        .update({ sessions_remaining: remaining })
-        .eq('id', subscription.id)
-      if (error) throw error
-
-      // Audit row; a ledger failure must not fail the check-in itself.
-      await supabase.from('session_deductions' as any).insert({
-        member_id: member.id,
-        source_type: 'personal',
-        source_id: subscription.id,
-        attendance_id: attendanceId,
-        amount: 1,
-        action: 'deduct',
-        created_at: nowIso
-      })
-
-      return remaining
-    }
-
-    return activeSub.sessions_remaining
-  }
-
   const handleQrCheckIn = async (scannedValue: string) => {
     // Ignore any overlapping call: one scan must only ever check in once.
     if (checkInInFlightRef.current) return
@@ -988,61 +929,28 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
 
       const nowIso = now.toISOString()
 
-      // Atomic, idempotent server-side check-in: it records attendance and
-      // consumes a session exactly once per visit, however often it is called.
-      // This is what stops a repeat scan from deducting twice.
+      // Atomic, idempotent, capped server-side check-in: it records attendance
+      // and consumes a session at most once per day (twice on Mondays). The
+      // daily cap is the hard rule and lives in the database, not here.
       const { data: rpcData, error: rpcError } = await supabase.rpc('qr_check_in' as any, {
         p_member_id: member.id,
         p_branch_id: branchId
       })
+      if (rpcError) throw rpcError
 
-      const rpcMissing =
-        !!rpcError &&
-        (rpcError.code === 'PGRST202' || /could not find the function|does not exist/i.test(rpcError.message || ''))
-      if (rpcError && !rpcMissing) throw rpcError
+      if (rpcData?.daily_limit_reached) {
+        throw new Error(
+          rpcData.daily_limit > 1
+            ? `You've already checked in ${rpcData.daily_limit} times today. That's the daily limit — see you tomorrow.`
+            : "You've already checked in today. Only one QR check-in is allowed per day — see you tomorrow."
+        )
+      }
 
-      let attendanceId: string | null = null
-      let isDuplicate = false
+      const attendanceId: string | null = rpcData?.attendance_id ?? null
+      const isDuplicate = Boolean(rpcData?.duplicate)
       let newSessionsRemaining = activeSub.sessions_remaining
-
-      if (!rpcMissing) {
-        attendanceId = rpcData?.attendance_id ?? null
-        isDuplicate = Boolean(rpcData?.duplicate)
-        if (typeof rpcData?.sessions_remaining === 'number') {
-          newSessionsRemaining = rpcData.sessions_remaining
-        }
-      } else {
-        // Fallback while qr_check_in is not yet deployed: keep the legacy flow
-        // so check-in still works, guarded by the in-flight latch above.
-        const { data: recent } = await supabase
-          .from('attendance_records')
-          .select('id')
-          .eq('member_id', member.id)
-          .gte('check_in_time', new Date(now.getTime() - 2 * 60 * 1000).toISOString())
-          .limit(1)
-
-        isDuplicate = Boolean(recent && recent.length > 0)
-        attendanceId = isDuplicate ? recent![0].id : null
-
-        if (!isDuplicate) {
-          const { data: inserted, error: attendanceError } = await supabase
-            .from('attendance_records')
-            .insert({
-              member_id: member.id,
-              check_in_time: nowIso,
-              check_in_method: 'qr',
-              branch_id: branchId
-            })
-            .select('id')
-            .single()
-
-          if (attendanceError) throw attendanceError
-          attendanceId = inserted?.id ?? null
-        }
-
-        if (isSessionBased && !isDuplicate) {
-          newSessionsRemaining = await deductSessionForCheckIn(attendanceId, activeSub, nowIso)
-        }
+      if (typeof rpcData?.sessions_remaining === 'number') {
+        newSessionsRemaining = rpcData.sessions_remaining
       }
 
       // If a booked class is inside its own window, mark it attended too
