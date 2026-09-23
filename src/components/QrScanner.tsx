@@ -9,6 +9,7 @@ type QrScannerViewProps = {
 export function QrScannerView({ onDecode, className }: QrScannerViewProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const onDecodeRef = useRef(onDecode)
+  const hasDecodedRef = useRef(false)
   const [cameraError, setCameraError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -19,9 +20,18 @@ export function QrScannerView({ onDecode, className }: QrScannerViewProps) {
     const video = videoRef.current
     if (!video) return
 
+    hasDecodedRef.current = false
+
     const scanner = new QrScanner(
       video,
-      (result) => onDecodeRef.current(result.data),
+      (result) => {
+        // The scanner decodes on every camera frame while a code is in view;
+        // emit a single result so one scan can never trigger two check-ins.
+        if (hasDecodedRef.current) return
+        hasDecodedRef.current = true
+        scanner.stop()
+        onDecodeRef.current(result.data)
+      },
       {
         highlightScanRegion: true,
         highlightCodeOutline: true,

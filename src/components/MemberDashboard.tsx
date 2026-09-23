@@ -19,7 +19,7 @@
     return now.getDay() === 6 && now.getHours() >= 0
   }
 
-import { useState, useEffect, useLayoutEffect } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef } from 'react'
 import { User, Calendar, Dumbbell, TrendingUp, LogOut, Bell, QrCode, ChevronRight, Award, Clock, AlertTriangle, Check, X, Users, Zap, Gift } from 'lucide-react'
 import { Button } from './ui/button'
 import { supabase } from '../lib/supabase'
@@ -214,6 +214,11 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
   } | null>(null)
   const [showPastBookings, setShowPastBookings] = useState(false)
   const [lastTabBeforePastBookings, setLastTabBeforePastBookings] = useState<'home' | 'classes' | 'progress' | 'profile'>('home')
+
+  // Guards that make a QR check-in run at most once: one at a time (overlapping
+  // scans/callbacks are ignored) and one per deep-link payload.
+  const checkInInFlightRef = useRef(false)
+  const handledPayloadRef = useRef<string | null>(null)
 
   const resetScroll = () => {
     window.scrollTo({ top: 0, left: 0, behavior: 'auto' })
@@ -880,8 +885,6 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
   // deduct_session_for_attendance is booking-driven, so it is not used here:
   // a QR check-in must deduct whether or not a class was booked.
   const deductSessionForCheckIn = async (
-    bookingId: string | null,
-    sessionId: string | null,
     attendanceId: string | null,
     activeSub: any,
     nowIso: string
@@ -891,20 +894,21 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
 
     const remaining = Math.max(0, activeSub.sessions_remaining - 1)
 
-    if (sharedSubscription) {
+    // Bill whichever pool the active subscription actually came from.
+    if (!subscription && sharedSubscription) {
       const { error } = await supabase
         .from('shared_subscriptions' as any)
         .update({ sessions_remaining: remaining })
         .eq('id', sharedSubscription.id)
       if (error) throw error
 
+      // Audit row; a ledger failure must not fail the check-in itself.
       await supabase.from('session_deductions' as any).insert({
         member_id: member.id,
         source_type: 'shared',
         source_id: sharedSubscription.id,
-        booking_id: bookingId,
         attendance_id: attendanceId,
-        session_id: sessionId,
+        amount: 1,
         action: 'deduct',
         created_at: nowIso
       })
@@ -919,6 +923,17 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
         .eq('id', subscription.id)
       if (error) throw error
 
+      // Audit row; a ledger failure must not fail the check-in itself.
+      await supabase.from('session_deductions' as any).insert({
+        member_id: member.id,
+        source_type: 'personal',
+        source_id: subscription.id,
+        attendance_id: attendanceId,
+        amount: 1,
+        action: 'deduct',
+        created_at: nowIso
+      })
+
       return remaining
     }
 
@@ -926,6 +941,10 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
   }
 
   const handleQrCheckIn = async (scannedValue: string) => {
+    // Ignore any overlapping call: one scan must only ever check in once.
+    if (checkInInFlightRef.current) return
+    checkInInFlightRef.current = true
+
     setShowScanner(false)
     setCheckInState('checking')
     setCheckInError(null)
@@ -969,59 +988,89 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
 
       const nowIso = now.toISOString()
 
-      // Ignore repeat scans inside a short window
-      const { data: recent } = await supabase
-        .from('attendance_records')
-        .select('id')
-        .eq('member_id', member.id)
-        .gte('check_in_time', new Date(now.getTime() - 2 * 60 * 1000).toISOString())
-        .limit(1)
+      // Atomic, idempotent server-side check-in: it records attendance and
+      // consumes a session exactly once per visit, however often it is called.
+      // This is what stops a repeat scan from deducting twice.
+      const { data: rpcData, error: rpcError } = await supabase.rpc('qr_check_in' as any, {
+        p_member_id: member.id,
+        p_branch_id: branchId
+      })
 
-      const isDuplicate = Boolean(recent && recent.length > 0)
-      let attendanceId: string | null = isDuplicate ? recent![0].id : null
+      const rpcMissing =
+        !!rpcError &&
+        (rpcError.code === 'PGRST202' || /could not find the function|does not exist/i.test(rpcError.message || ''))
+      if (rpcError && !rpcMissing) throw rpcError
 
-      if (!isDuplicate) {
-        const { data: inserted, error: attendanceError } = await supabase
-          .from('attendance_records')
-          .insert({
-            member_id: member.id,
-            check_in_time: nowIso,
-            check_in_method: 'qr',
-            branch_id: branchId
-          })
-          .select('id')
-          .single()
+      let attendanceId: string | null = null
+      let isDuplicate = false
+      let newSessionsRemaining = activeSub.sessions_remaining
 
-        if (attendanceError) throw attendanceError
-        attendanceId = inserted?.id ?? null
-      }
-
-      // If a booked class is inside its own window, mark it attended too
-      const { data: bookings } = await supabase
-        .from('class_bookings')
-        .select('*, group_class:group_classes(*)')
-        .eq('member_id', member.id)
-        .eq('class_date', nowIso.split('T')[0])
-        .eq('status', 'booked')
-
-      const classBooking = (bookings || []).find((b) => getCheckInWindow(b).isOpen)
-
-      if (classBooking) {
-        const { data: alreadyAttended } = await supabase
+      if (!rpcMissing) {
+        attendanceId = rpcData?.attendance_id ?? null
+        isDuplicate = Boolean(rpcData?.duplicate)
+        if (typeof rpcData?.sessions_remaining === 'number') {
+          newSessionsRemaining = rpcData.sessions_remaining
+        }
+      } else {
+        // Fallback while qr_check_in is not yet deployed: keep the legacy flow
+        // so check-in still works, guarded by the in-flight latch above.
+        const { data: recent } = await supabase
           .from('attendance_records')
           .select('id')
           .eq('member_id', member.id)
-          .eq('class_booking_id', classBooking.id)
-          .maybeSingle()
+          .gte('check_in_time', new Date(now.getTime() - 2 * 60 * 1000).toISOString())
+          .limit(1)
 
-        if (!alreadyAttended) {
-          const { error: bookingError } = await supabase
-            .from('class_bookings')
-            .update({ status: 'attended', checked_in_at: nowIso })
-            .eq('id', classBooking.id)
-          if (bookingError) throw bookingError
+        isDuplicate = Boolean(recent && recent.length > 0)
+        attendanceId = isDuplicate ? recent![0].id : null
 
-          if (attendanceId) {
+        if (!isDuplicate) {
+          const { data: inserted, error: attendanceError } = await supabase
+            .from('attendance_records')
+            .insert({
+              member_id: member.id,
+              check_in_time: nowIso,
+              check_in_method: 'qr',
+              branch_id: branchId
+            })
+            .select('id')
+            .single()
+
+          if (attendanceError) throw attendanceError
+          attendanceId = inserted?.id ?? null
+        }
+
+        if (isSessionBased && !isDuplicate) {
+          newSessionsRemaining = await deductSessionForCheckIn(attendanceId, activeSub, nowIso)
+        }
+      }
+
+      // If a booked class is inside its own window, mark it attended too
+      if (!isDuplicate) {
+        const { data: bookings } = await supabase
+          .from('class_bookings')
+          .select('*, group_class:group_classes(*)')
+          .eq('member_id', member.id)
+          .eq('class_date', nowIso.split('T')[0])
+          .eq('status', 'booked')
+
+        const classBooking = (bookings || []).find((b) => getCheckInWindow(b).isOpen)
+
+        if (classBooking && attendanceId) {
+          const { data: alreadyAttended } = await supabase
+            .from('attendance_records')
+            .select('id')
+            .eq('member_id', member.id)
+            .eq('class_booking_id', classBooking.id)
+            .maybeSingle()
+
+          if (!alreadyAttended) {
+            const { error: bookingError } = await supabase
+              .from('class_bookings')
+              .update({ status: 'attended', checked_in_at: nowIso })
+              .eq('id', classBooking.id)
+            if (bookingError) throw bookingError
+
             await supabase
               .from('attendance_records')
               .update({
@@ -1033,17 +1082,9 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
         }
       }
 
-      // A scan always consumes a session, whether or not a class was booked
-      let newSessionsRemaining = activeSub.sessions_remaining
+      // Reflect the consumed session on whichever pool it was taken from
       if (isSessionBased && !isDuplicate) {
-        newSessionsRemaining = await deductSessionForCheckIn(
-          classBooking?.id ?? null,
-          (classBooking as any)?.session_id ?? null,
-          attendanceId,
-          activeSub,
-          nowIso
-        )
-        if (sharedSubscription) {
+        if (!subscription && sharedSubscription) {
           setSharedSubscription(prev => prev ? { ...prev, sessions_remaining: newSessionsRemaining } : null)
         } else if (subscription) {
           setSubscription(prev => prev ? { ...prev, sessions_remaining: newSessionsRemaining } : null)
@@ -1078,12 +1119,16 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
     } catch (err) {
       setCheckInError(err instanceof Error ? err.message : 'Check-in failed')
       setCheckInState('error')
+    } finally {
+      checkInInFlightRef.current = false
     }
   }
 
   // Run a check-in that arrived from the gym's QR deep link, once data has loaded
   useEffect(() => {
     if (!checkInPayload || !dataLoaded) return
+    if (handledPayloadRef.current === checkInPayload) return
+    handledPayloadRef.current = checkInPayload
     setShowAttendModal(true)
     handleQrCheckIn(checkInPayload)
     onCheckInHandled?.()
