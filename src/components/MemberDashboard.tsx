@@ -26,6 +26,13 @@ import { supabase } from '../lib/supabase'
 import { MemberData } from './MemberLogin'
 import { WorkoutTracking } from './WorkoutTracking'
 import { QrScannerView } from './QrScanner'
+import {
+  getSubscriptionStatus,
+  GYM_WHATSAPP,
+  QR_CHECK_IN_GRACE_MS,
+  CLASS_CHECK_IN_OPENS_BEFORE_MS,
+  type SubscriptionStatus,
+} from '../lib/gym'
 
 type MemberDashboardProps = {
   member: MemberData
@@ -37,7 +44,7 @@ type MemberDashboardProps = {
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 // Check-in opens 30 minutes before a session starts and closes 30 minutes after it ends.
-const CHECK_IN_GRACE_MS = 30 * 60 * 1000
+const CHECK_IN_GRACE_MS = QR_CHECK_IN_GRACE_MS
 
 type CheckInWindow = { opensAt: Date; closesAt: Date; label: string }
 
@@ -113,15 +120,6 @@ type BodyMetric = {
   recorded_at: string
 }
 
-type SubscriptionStatus = {
-  isValid: boolean
-  isExpired: boolean
-  isExhausted: boolean
-  needsRenewal: boolean
-  renewalReason: string | null
-  daysUntilExpiry: number | null
-}
-
 type GroupClass = {
   id: string
   name: string
@@ -142,40 +140,6 @@ type ClassBooking = {
   checked_in_at: string | null
   session_id?: string | null
   group_class: GroupClass
-}
-
-const getSubscriptionStatus = (subscription: Subscription | null): SubscriptionStatus => {
-  if (!subscription) {
-    return { isValid: false, isExpired: false, isExhausted: false, needsRenewal: false, renewalReason: null, daysUntilExpiry: null }
-  }
-
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  
-  const endDate = subscription.end_date ? new Date(subscription.end_date) : null
-  if (endDate) endDate.setHours(0, 0, 0, 0)
-  
-  const isExpired = endDate ? today > endDate : false
-  const isExhausted = subscription.package.type === 'session' && (subscription.sessions_remaining === 0 || subscription.sessions_remaining === null)
-  const isValid = !isExpired && !isExhausted && subscription.status === 'active'
-  
-  let daysUntilExpiry: number | null = null
-  if (endDate) {
-    daysUntilExpiry = Math.ceil((endDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
-  }
-  
-  let needsRenewal = false
-  let renewalReason: string | null = null
-  
-  if (subscription.package.type === 'session' && subscription.sessions_remaining !== null && subscription.sessions_remaining < 4 && subscription.sessions_remaining > 0) {
-    needsRenewal = true
-    renewalReason = `Only ${subscription.sessions_remaining} sessions remaining`
-  } else if (daysUntilExpiry !== null && daysUntilExpiry <= 7 && daysUntilExpiry > 0) {
-    needsRenewal = true
-    renewalReason = `Expires in ${daysUntilExpiry} day${daysUntilExpiry !== 1 ? 's' : ''}`
-  }
-  
-  return { isValid, isExpired, isExhausted, needsRenewal, renewalReason, daysUntilExpiry }
 }
 
 export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHandled }: MemberDashboardProps) {
@@ -592,7 +556,7 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
     const start = booking.group_class?.start_time ? new Date(`${booking.class_date}T${booking.group_class.start_time}`) : null
     const end = booking.group_class?.end_time ? new Date(`${booking.class_date}T${booking.group_class.end_time}`) : null
     if (!start || !end) return { isOpen: false, opensAt: null as Date | null, closesAt: null as Date | null }
-    const opensAt = new Date(start.getTime() - 10 * 60 * 1000)
+    const opensAt = new Date(start.getTime() - CLASS_CHECK_IN_OPENS_BEFORE_MS)
     const closesAt = end
     const now = new Date()
     return { isOpen: now >= opensAt && now <= closesAt, opensAt, closesAt }
@@ -734,7 +698,7 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
         
         const classStart = new Date(`${booking.class_date}T${booking.group_class.start_time}`)
         const classEnd = new Date(`${booking.class_date}T${booking.group_class.end_time}`)
-        const graceStart = new Date(classStart.getTime() - 10 * 60 * 1000) // 10 min before
+        const graceStart = new Date(classStart.getTime() - CLASS_CHECK_IN_OPENS_BEFORE_MS) // opens 10 min before
         const graceEnd = classEnd // Class end time
         
         return now >= graceStart && now <= graceEnd
@@ -750,7 +714,7 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
 
         if (nextBooking?.group_class?.start_time) {
           const classStart = new Date(`${nextBooking.class_date}T${nextBooking.group_class.start_time}`)
-          const graceStart = new Date(classStart.getTime() - 10 * 60 * 1000)
+          const graceStart = new Date(classStart.getTime() - CLASS_CHECK_IN_OPENS_BEFORE_MS)
           
           if (now < graceStart) {
             const minutesUntilOpen = Math.ceil((graceStart.getTime() - now.getTime()) / (1000 * 60))
@@ -1373,7 +1337,7 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
             </div>
             <Button 
               onClick={() => {
-                const phoneNumber = '201222633231'
+                const phoneNumber = GYM_WHATSAPP
                 const message = 'Hi, I would like to renew my subscription.'
                 const whatsappUrl = `https://wa.me/${phoneNumber}?text=${encodeURIComponent(message)}`
                 window.open(whatsappUrl, '_self')
@@ -1400,7 +1364,7 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
             </div>
             <Button 
               onClick={() => {
-                const phoneNumber = '201222633231'
+                const phoneNumber = GYM_WHATSAPP
                 const message = 'Hi, I would like to renew my subscription.'
                 const whatsappUrl = `https://wa.me/${phoneNumber}?text=${encodeURIComponent(message)}`
                 window.open(whatsappUrl, '_self')

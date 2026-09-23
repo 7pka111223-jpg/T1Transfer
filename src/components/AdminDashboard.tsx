@@ -9,6 +9,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { MemberProfilePanel } from './admin/MemberProfilePanel'
 import { SharedSubscriptions } from './admin/SharedSubscriptions'
 import { CheckInQrScreen } from './CheckInQrScreen'
+import { getSubscriptionStatus, LOW_SESSIONS_THRESHOLD, EXPIRING_SOON_DAYS } from '../lib/gym'
 
 type AdminDashboardProps = {
   admin: {
@@ -154,6 +155,50 @@ type ClassBooking = {
   session_id: string | null
   member?: { full_name: string; member_id: string; phone: string; level: string }
   group_class?: GroupClass
+}
+
+// The subscription a member's status is judged by: an active row if there is
+// one, otherwise the latest — so an older superseded row can't mask the real
+// one (the code previously took the first row that matched by member).
+const pickPrimarySubscription = (subscriptions: Subscription[], memberId: string): Subscription | null => {
+  const mine = subscriptions.filter(s => s.member_id === memberId)
+  if (mine.length === 0) return null
+  const active = mine.filter(s => s.status === 'active')
+  const pool = active.length > 0 ? active : mine
+  return pool.sort((a, b) => new Date(b.end_date ?? 0).getTime() - new Date(a.end_date ?? 0).getTime())[0]
+}
+
+// Removes the ledger 'deduct' row that matches an un-attend, so shared and
+// personal usage reporting stay correct in both directions.
+const removeDeductionLedger = async (opts: {
+  memberId: string
+  sourceType: 'shared' | 'personal'
+  sourceId: string
+  bookingId?: string | null
+  attendanceId?: string | null
+}) => {
+  const { memberId, sourceType, sourceId, bookingId, attendanceId } = opts
+
+  if (bookingId) {
+    const { data } = await supabase.from('session_deductions' as any).delete()
+      .eq('source_type', sourceType).eq('source_id', sourceId).eq('booking_id', bookingId).eq('action', 'deduct')
+      .select('id')
+    if (data && data.length > 0) return
+  }
+
+  if (attendanceId) {
+    const { data } = await supabase.from('session_deductions' as any).delete()
+      .eq('attendance_id', attendanceId).eq('action', 'deduct').select('id')
+    if (data && data.length > 0) return
+  }
+
+  const { data } = await supabase.from('session_deductions' as any).select('id')
+    .eq('member_id', memberId).eq('source_type', sourceType).eq('source_id', sourceId).eq('action', 'deduct')
+    .order('created_at', { ascending: false }).limit(1).maybeSingle()
+  if (data?.id) {
+    const { error } = await supabase.from('session_deductions' as any).delete().eq('id', data.id)
+    if (error) console.error('Failed to delete deduction entry:', error)
+  }
 }
 
 const denseOverlay = Object.freeze({
@@ -356,6 +401,9 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
   const [editDateTimeModal, setEditDateTimeModal] = useState<{ open: boolean; assessment: AssessmentSession | null; date: string; time: string }>({ open: false, assessment: null, date: '', time: '' })
   const [leadSearch, setLeadSearch] = useState('')
   const [leadStatusFilter, setLeadStatusFilter] = useState<'all' | LeadStatus>('all')
+  // Which lifecycle stage of lead to show. Defaults to pending so the working
+  // queue is unchanged, but converted/cancelled leads stay reachable.
+  const [leadStageFilter, setLeadStageFilter] = useState<'pending' | 'converted' | 'cancelled' | 'all'>('pending')
   const [leadSort, setLeadSort] = useState<'newest' | 'oldest' | 'preferred' | 'name'>('newest')
   const [updatingLeadId, setUpdatingLeadId] = useState<string | null>(null)
   const [editLeadForm, setEditLeadForm] = useState({ full_name: '', phone: '', email: '', branch: '', preferred_date: '', preferred_time: '' })
@@ -400,7 +448,7 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
   const [selectedMember, setSelectedMember] = useState<Member | null>(null)
   const [membersScrollPosition, setMembersScrollPosition] = useState(0)
 
-  const generateMemberId = async () => {
+  const generateMemberId = async (exclude: Set<string> = new Set()) => {
     try {
       const { data, error } = await supabase
         .from('members')
@@ -426,8 +474,9 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
       
       // Find first available ID in 3-digit range (starting from 1)
       for (let i = 1; i <= 999; i++) {
-        if (!threeDigitIds.includes(i)) {
-          return `T1${i.toString().padStart(3, '0')}`
+        const candidate = `T1${i.toString().padStart(3, '0')}`
+        if (!threeDigitIds.includes(i) && !exclude.has(candidate)) {
+          return candidate
         }
       }
       
@@ -439,8 +488,9 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
       
       // Find first available ID in 4-digit range
       for (let i = 10000; i <= 19999; i++) {
-        if (!fourDigitIds.includes(i)) {
-          return `T1${i.toString().padStart(4, '0')}`
+        const candidate = `T1${i.toString().padStart(4, '0')}`
+        if (!fourDigitIds.includes(i) && !exclude.has(candidate)) {
+          return candidate
         }
       }
       
@@ -452,13 +502,14 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
       
       // Find first available ID in 5-digit range
       for (let i = 20000; i <= 99999; i++) {
-        if (!fiveDigitIds.includes(i)) {
-          return `T1${i.toString().padStart(5, '0')}`
+        const candidate = `T1${i.toString().padStart(5, '0')}`
+        if (!fiveDigitIds.includes(i) && !exclude.has(candidate)) {
+          return candidate
         }
       }
       
       // All ranges full (very unlikely)
-      return `T1${Date.now().toString().slice(-6)}`
+      return `T1${Date.now().toString().slice(-6)}${Math.floor(Math.random() * 10)}`
       
     } catch (err) {
       console.error('Error generating member ID:', err)
@@ -466,11 +517,7 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
     }
   }
 
-  const generatePin = () => {
-    return String(Math.floor(1000 + Math.random() * 9000))
-  }
-
-    const getFridayWindow = (offset: number) => {
+  const getFridayWindow = (offset: number) => {
       const today = new Date()
       const day = today.getDay() // 0 Sun ... 6 Sat
       
@@ -541,7 +588,7 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
       setRecords(recordsRes.data)
       setStats(prev => ({ ...prev, totalRecords: recordsRes.data.length }))
     }
-    if (assessmentsRes.data) setAssessments(assessmentsRes.data.filter(a => a.status === 'pending').map(a => ({ ...a, lead_status: (a as any).lead_status || 'not_contacted' })))
+    if (assessmentsRes.data) setAssessments(assessmentsRes.data.map(a => ({ ...a, lead_status: (a as any).lead_status || 'not_contacted' })))
     if (attendanceRes.data) {
       setAttendance(attendanceRes.data)
       const todayCount = attendanceRes.data.filter(a => a.check_in_time.startsWith(today)).length
@@ -625,7 +672,8 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
         return
       }
       const lead = { ...selectedAssessment, ...editLeadForm, full_name: editLeadForm.full_name.trim(), phone: editLeadForm.phone.trim() }
-      const memberId = await generateMemberId()
+      const attemptedIds = new Set<string>()
+      let memberId = await generateMemberId(attemptedIds)
       
       const emergencyContact = newUserForm.emergency_contact_name 
         ? JSON.stringify({
@@ -654,23 +702,38 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
         }
       }
 
-      const { error: memberError } = await supabase.from('members').insert({
-        member_id: memberId,
-        full_name: lead.full_name,
-        phone: lead.phone,
-        email: editLeadForm.email.trim() || null,
-        pin: null,
-        level: newUserForm.level,
-        status: 'pending',
-        branch_id: branchId,
-        date_of_birth: newUserForm.date_of_birth || null,
-        gender: newUserForm.gender || null,
-        training_goal: newUserForm.training_goal || null,
-        fitness_level: newUserForm.fitness_level || null,
-        medical_notes: newUserForm.medical_notes || null,
-        emergency_contact: emergencyContact,
-        loyalty_points: 0
-      })
+      // Insert with a fresh id, retrying if another convert grabbed the same one.
+      let memberError: any = null
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const { error } = await supabase.from('members').insert({
+          member_id: memberId,
+          full_name: lead.full_name,
+          phone: lead.phone,
+          email: editLeadForm.email.trim() || null,
+          pin: null,
+          level: newUserForm.level,
+          status: 'pending',
+          branch_id: branchId,
+          date_of_birth: newUserForm.date_of_birth || null,
+          gender: newUserForm.gender || null,
+          training_goal: newUserForm.training_goal || null,
+          fitness_level: newUserForm.fitness_level || null,
+          medical_notes: newUserForm.medical_notes || null,
+          emergency_contact: emergencyContact,
+          loyalty_points: 0
+        })
+
+        memberError = error
+        if (!memberError) break
+
+        // Duplicate member id (another convert beat us to it): take the next one.
+        if (memberError.code === '23505' && /member_id/i.test(memberError.message)) {
+          attemptedIds.add(memberId)
+          memberId = await generateMemberId(attemptedIds)
+          continue
+        }
+        break
+      }
 
       if (memberError) throw memberError
 
@@ -903,7 +966,10 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
     }
   }
 
-  const filteredLeads = assessments
+  const leadsInStage = assessments.filter(a => leadStageFilter === 'all' || a.status === leadStageFilter)
+  const pendingLeads = assessments.filter(a => a.status === 'pending')
+
+  const filteredLeads = leadsInStage
     .filter(a => {
       if (leadStatusFilter !== 'all' && getLeadStatus(a) !== leadStatusFilter) return false
       const q = leadSearch.trim().toLowerCase()
@@ -1209,6 +1275,7 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
               booking_id: targetBooking.id,
               attendance_id: insertedAttendance?.id || null,
               session_id: selectedSession?.id || null,
+              amount: 1,
               action: 'deduct',
               created_at: now
             })
@@ -1220,6 +1287,19 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
               .update({ sessions_remaining: newSessionsRemaining })
               .eq('id', subscription.id)
             if (updateError) throw updateError
+
+            const { error: deductionError } = await supabase.from('session_deductions' as any).insert({
+              member_id: targetBooking.member_id,
+              source_type: 'personal',
+              source_id: subscription.id,
+              booking_id: targetBooking.id,
+              attendance_id: insertedAttendance?.id || null,
+              session_id: selectedSession?.id || null,
+              amount: 1,
+              action: 'deduct',
+              created_at: now
+            })
+            if (deductionError) console.error('Failed to record deduction:', deductionError)
           }
         }
       }
@@ -1315,6 +1395,7 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
                 booking_id: booking.id,
                 attendance_id: insertedAttendance?.id || null,
                 session_id: selectedSession?.id || null,
+                amount: 1,
                 action: 'deduct',
                 created_at: now
               })
@@ -1326,6 +1407,19 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
                 .update({ sessions_remaining: newSessionsRemaining })
                 .eq('id', subscription.id)
               if (updateError) throw updateError
+
+              const { error: deductionError } = await supabase.from('session_deductions' as any).insert({
+                member_id: booking.member_id,
+                source_type: 'personal',
+                source_id: subscription.id,
+                booking_id: booking.id,
+                attendance_id: insertedAttendance?.id || null,
+                session_id: selectedSession?.id || null,
+                amount: 1,
+                action: 'deduct',
+                created_at: now
+              })
+              if (deductionError) console.error('Failed to record deduction:', deductionError)
             }
           }
         }
@@ -1401,52 +1495,13 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
               if (sharedUpdateError) throw sharedUpdateError
 
               // Remove the matching deduction so shared usage stays correct
-              let deductionDeleted = false
-              const { data: deletedByBooking, error: deleteByBookingError } = await supabase
-                .from('session_deductions' as any)
-                .delete()
-                .eq('source_type', 'shared')
-                .eq('source_id', sharedSubscription.id)
-                .eq('booking_id', booking.id)
-                .eq('action', 'deduct')
-                .select('id')
-
-              if (!deleteByBookingError && deletedByBooking && deletedByBooking.length > 0) {
-                deductionDeleted = true
-              }
-
-              if (!deductionDeleted && attendanceRow?.id) {
-                const { data: deletedByAttendance, error: deleteByAttendanceError } = await supabase
-                  .from('session_deductions' as any)
-                  .delete()
-                  .eq('attendance_id', attendanceRow.id)
-                  .eq('action', 'deduct')
-                  .select('id')
-                if (!deleteByAttendanceError && deletedByAttendance && deletedByAttendance.length > 0) {
-                  deductionDeleted = true
-                }
-              }
-
-              if (!deductionDeleted) {
-                const { data: latestDeduction } = await supabase
-                  .from('session_deductions' as any)
-                  .select('id')
-                  .eq('member_id', booking.member_id)
-                  .eq('source_type', 'shared')
-                  .eq('source_id', sharedSubscription.id)
-                  .eq('action', 'deduct')
-                  .order('created_at', { ascending: false })
-                  .limit(1)
-                  .maybeSingle()
-
-                if (latestDeduction?.id) {
-                  const { error: deleteByIdError } = await supabase
-                    .from('session_deductions' as any)
-                    .delete()
-                    .eq('id', latestDeduction.id)
-                  if (deleteByIdError) console.error('Failed to delete deduction entry:', deleteByIdError)
-                }
-              }
+              await removeDeductionLedger({
+                memberId: booking.member_id,
+                sourceType: 'shared',
+                sourceId: sharedSubscription.id,
+                bookingId: booking.id,
+                attendanceId: attendanceRow?.id
+              })
             } else if (subscription) {
               // Update personal subscription
               const { error: updateError } = await supabase
@@ -1454,6 +1509,15 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
                 .update({ sessions_remaining: newSessionsRemaining })
                 .eq('id', subscription.id)
               if (updateError) throw updateError
+
+              // Remove the matching deduction so personal usage stays correct
+              await removeDeductionLedger({
+                memberId: booking.member_id,
+                sourceType: 'personal',
+                sourceId: subscription.id,
+                bookingId: booking.id,
+                attendanceId: attendanceRow?.id
+              })
             }
           }
         }
@@ -1494,48 +1558,61 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
 
       // Restore sessions for attended bookings
       const attendedBookings = sessionBookings.filter(b => b.status === 'attended')
-      
+
       for (const booking of attendedBookings) {
-        // Check if it's a shared subscription
-        const { data: sharedSubscription } = await supabase
-          .from('shared_subscription_members' as any)
-          .select('shared_subscription:shared_subscriptions(*)')
+        const nowIso = new Date().toISOString()
+
+        // Mirror the deduction order: an active personal subscription first,
+        // otherwise the member's shared pool. (The old lookup compared
+        // shared_subscriptions.sessions_total against a booking id, so it
+        // almost never matched and shared sessions were never restored.)
+        const { data: personalSub } = await supabase
+          .from('member_subscriptions')
+          .select('*')
           .eq('member_id', booking.member_id)
-          .eq('shared_subscription.sessions_total', booking.session_id)
-          .single()
-        
-        if (sharedSubscription) {
-          // Update shared subscription
-          const { error: sharedUpdateError } = await supabase
-            .from('shared_subscriptions')
-            .update({ sessions_remaining: (sharedSubscription.shared_subscription.sessions_remaining || 0) + 1 })
-            .eq('id', sharedSubscription.shared_subscription.id)
-          if (sharedUpdateError) throw sharedUpdateError
-          
-          // Record the restoration
+          .eq('status', 'active')
+          .maybeSingle()
+
+        if (personalSub) {
+          const { error: updateError } = await supabase
+            .from('member_subscriptions')
+            .update({ sessions_remaining: (personalSub.sessions_remaining || 0) + 1 })
+            .eq('id', personalSub.id)
+          if (updateError) throw updateError
+
           const { error: restoreError } = await supabase.from('session_deductions' as any).insert({
             member_id: booking.member_id,
-            source_type: 'shared',
-            source_id: sharedSubscription.shared_subscription.id,
+            source_type: 'personal',
+            source_id: personalSub.id,
+            amount: 1,
             action: 'restore',
-            created_at: new Date().toISOString()
+            created_at: nowIso
           })
           if (restoreError) console.error('Failed to record restoration:', restoreError)
         } else {
-          // Update personal subscription
-          const { data: subscription } = await supabase
-            .from('member_subscriptions')
-            .select('*')
+          const { data: sharedMembership } = await supabase
+            .from('shared_subscription_members' as any)
+            .select('shared_subscription:shared_subscriptions(*)')
             .eq('member_id', booking.member_id)
-            .eq('status', 'active')
-            .single()
-          
-          if (subscription) {
-            const { error: updateError } = await supabase
-              .from('member_subscriptions')
-              .update({ sessions_remaining: (subscription.sessions_remaining || 0) + 1 })
-              .eq('id', subscription.id)
-            if (updateError) throw updateError
+            .maybeSingle()
+
+          const sharedSub = sharedMembership?.shared_subscription
+          if (sharedSub) {
+            const { error: sharedUpdateError } = await supabase
+              .from('shared_subscriptions')
+              .update({ sessions_remaining: (sharedSub.sessions_remaining || 0) + 1 })
+              .eq('id', sharedSub.id)
+            if (sharedUpdateError) throw sharedUpdateError
+
+            const { error: restoreError } = await supabase.from('session_deductions' as any).insert({
+              member_id: booking.member_id,
+              source_type: 'shared',
+              source_id: sharedSub.id,
+              amount: 1,
+              action: 'restore',
+              created_at: nowIso
+            })
+            if (restoreError) console.error('Failed to record restoration:', restoreError)
           }
         }
       }
@@ -1553,6 +1630,19 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
       alert('Failed to cancel class. Please try again.')
     }
   }
+
+  // Expiring / expired judged by the shared status helper, so the admin panel
+  // and the member app always agree (same 7-day window and low-session rule).
+  const membersWithStatus = members.map(member => {
+    const sub = pickPrimarySubscription(subscriptions, member.id)
+    return { member, sub, status: getSubscriptionStatus(sub) }
+  })
+  const expiringSoonMembers = membersWithStatus
+    .filter(({ status }) => status.needsRenewal && !status.isExpired && !status.isExhausted)
+    .slice(0, 50)
+  const expiredMembers = membersWithStatus
+    .filter(({ status }) => status.isExpired || status.isExhausted)
+    .slice(0, 50)
 
   return (
     <div className="min-h-screen bg-t1-black text-t1-cream pb-24 overflow-y-auto">
@@ -1704,7 +1794,7 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
                   </button>
                 </div>
                 <div className="space-y-3">
-                  {assessments.slice(0, 3).map(a => (
+                  {pendingLeads.slice(0, 3).map(a => (
                     <div key={a.id} className="flex items-center justify-between py-2 border-b border-t1-red/10 last:border-0 gap-2">
                       <div>
                         <p className="font-semibold text-sm">{a.full_name}</p>
@@ -1715,7 +1805,7 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
                       </span>
                     </div>
                   ))}
-                  {assessments.length === 0 && (
+                  {pendingLeads.length === 0 && (
                     <p className="text-sm text-muted-foreground text-center py-4">No pending leads</p>
                   )}
                 </div>
@@ -2077,13 +2167,23 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
                       />
                     </div>
                     <select
+                      value={leadStageFilter}
+                      onChange={(e) => setLeadStageFilter(e.target.value as 'pending' | 'converted' | 'cancelled' | 'all')}
+                      className="h-10 bg-t1-black border border-t1-red/20 text-t1-cream rounded-xl px-3"
+                    >
+                      <option value="pending">Pending</option>
+                      <option value="converted">Converted</option>
+                      <option value="cancelled">Cancelled</option>
+                      <option value="all">All leads</option>
+                    </select>
+                    <select
                       value={leadStatusFilter}
                       onChange={(e) => setLeadStatusFilter(e.target.value as 'all' | LeadStatus)}
                       className="h-10 bg-t1-black border border-t1-red/20 text-t1-cream rounded-xl px-3"
                     >
-                      <option value="all">All statuses ({assessments.length})</option>
+                      <option value="all">All follow-ups ({leadsInStage.length})</option>
                       {LEAD_STATUS_OPTIONS.map(o => (
-                        <option key={o.value} value={o.value}>{o.label} ({assessments.filter(a => getLeadStatus(a) === o.value).length})</option>
+                        <option key={o.value} value={o.value}>{o.label} ({leadsInStage.filter(a => getLeadStatus(a) === o.value).length})</option>
                       ))}
                     </select>
                     <select
@@ -2097,7 +2197,7 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
                       <option value="name">Sort: Name A–Z</option>
                     </select>
                   </div>
-                  <p className="text-xs text-muted-foreground">Showing {filteredLeads.length} of {assessments.length} leads</p>
+                  <p className="text-xs text-muted-foreground">Showing {filteredLeads.length} of {leadsInStage.length} leads</p>
                 </div>
                 {filteredLeads.map(assessment => {
                   const ls = getLeadStatus(assessment)
@@ -2234,7 +2334,7 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
                 {filteredLeads.length === 0 && (
                   <div className="text-center py-12">
                     <UserPlus className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
-                    <p className="text-muted-foreground">{assessments.length === 0 ? 'No pending leads' : 'No leads match the current search / filter'}</p>
+                    <p className="text-muted-foreground">{leadsInStage.length === 0 ? (leadStageFilter === 'pending' ? 'No pending leads' : 'No leads in this view') : 'No leads match the current search / filter'}</p>
                   </div>
                 )}
               </div>
@@ -2691,93 +2791,59 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
                 <Clock className="w-5 h-5 text-amber-400" />
                 Expiring Soon
               </h3>
-              <p className="text-sm text-muted-foreground mb-6">Members with low sessions or subscriptions expiring within 5 days (showing up to 50)</p>
+              <p className="text-sm text-muted-foreground mb-6">Members with low sessions or subscriptions expiring within {EXPIRING_SOON_DAYS} days (showing up to 50)</p>
               <div className="space-y-4">
-                {(() => {
-                  const now = new Date()
-                  const fiveDaysFromNow = new Date(now.getTime() + 5 * 24 * 60 * 60 * 1000)
-                  const expiringSoonMembers = members.filter(member => {
-                    const memberSub = subscriptions.find(s => s.member_id === member.id)
-                    if (!memberSub) return false
-                    const isNotExpired = new Date(memberSub.end_date) >= now
-                    const lowSessions = memberSub.sessions_remaining !== null && memberSub.sessions_remaining < 4
-                    const expiringSoon = new Date(memberSub.end_date) >= now && new Date(memberSub.end_date) <= fiveDaysFromNow
-                    return isNotExpired && (lowSessions || expiringSoon)
-                  }).slice(0, 50) // Limit to 50 members for performance
-                  return expiringSoonMembers.map(member => {
-                    const memberSub = subscriptions.find(s => s.member_id === member.id)
-                    return (
-                      <div key={member.id} className="bg-t1-black/50 rounded-xl p-4 border border-t1-red/20">
-                        <div className="flex items-center justify-between mb-3">
-                          <div>
-                            <h4 className="font-cinzel font-semibold">{member.full_name}</h4>
-                            <p className="text-sm text-muted-foreground">{member.member_id}</p>
-                          </div>
-                          <div className="flex gap-2">
-                            <button
-                              onClick={() => window.location.href = `tel:${member.phone}`}
-                              className="p-2 rounded-lg bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 transition-colors"
-                              title="Call"
-                            >
-                              <Phone className="w-4 h-4" />
-                            </button>
-                            <button
-                              onClick={() => {
-                                const firstName = member.full_name.split(' ')[0]
-                                const expiryDate = memberSub ? new Date(memberSub.end_date).toLocaleDateString() : 'soon'
-                                let message = ''
-                                
-                                if (memberSub?.sessions_remaining !== null) {
-                                  // Session-based subscription
-                                  const sessionsLeft = memberSub.sessions_remaining
-                                  message = `Hey ${firstName}!%0A%0AJust a heads up - you've got ${sessionsLeft} session(s) left until ${expiryDate}. We'd hate to see you go!%0A%0AYour progress matters to us.%0A%0ARenew now and keep the momentum going.%0A%0AHit reply if you have any questions!`
-                                } else {
-                                  // Time-based subscription
-                                  message = `Hey ${firstName}!%0A%0AJust a heads up - your membership expires on ${expiryDate}. We'd hate to see you go!%0A%0AYour progress matters to us.%0A%0ARenew now and keep the momentum going.%0A%0AHit reply if you have any questions!`
-                                }
-                                
-                                const phone = member.phone.replace(/[^0-9]/g, '')
-                                const formattedPhone = phone.startsWith('0') ? '2' + phone : phone
-                                const url = `https://wa.me/${formattedPhone}?text=${message}`
-                                window.open(url, '_blank')
-                              }}
-                              className="p-2 rounded-lg bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 transition-colors"
-                              title="Send WhatsApp"
-                            >
-                              <MessageCircle className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </div>
-                        <div className="space-y-1 text-sm">
-                          {memberSub?.sessions_remaining !== null && memberSub.sessions_remaining < 4 && (
-                            <p className="text-amber-400">⚠️ Low Sessions: {memberSub.sessions_remaining} remaining</p>
-                          )}
-                          {memberSub && new Date(memberSub.end_date) <= fiveDaysFromNow && new Date(memberSub.end_date) >= now && (
-                            <p className="text-red-400">⏰ Expires: {new Date(memberSub.end_date).toLocaleDateString()}</p>
-                          )}
-                        </div>
+                {expiringSoonMembers.map(({ member, sub, status }) => (
+                  <div key={member.id} className="bg-t1-black/50 rounded-xl p-4 border border-t1-red/20">
+                    <div className="flex items-center justify-between mb-3">
+                      <div>
+                        <h4 className="font-cinzel font-semibold">{member.full_name}</h4>
+                        <p className="text-sm text-muted-foreground">{member.member_id}</p>
                       </div>
-                    )
-                  })
-                })()}
-                {(() => {
-                  const now = new Date()
-                  const fiveDaysFromNow = new Date(now.getTime() + 5 * 24 * 60 * 60 * 1000)
-                  const expiringSoonMembers = members.filter(member => {
-                    const memberSub = subscriptions.find(s => s.member_id === member.id)
-                    if (!memberSub) return false
-                    const isNotExpired = new Date(memberSub.end_date) >= now
-                    const lowSessions = memberSub.sessions_remaining !== null && memberSub.sessions_remaining < 4
-                    const expiringSoon = new Date(memberSub.end_date) >= now && new Date(memberSub.end_date) <= fiveDaysFromNow
-                    return isNotExpired && (lowSessions || expiringSoon)
-                  })
-                  return expiringSoonMembers.length === 0 && (
-                    <div className="text-center py-8">
-                      <Clock className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
-                      <p className="text-muted-foreground">No members expiring soon</p>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => window.location.href = `tel:${member.phone}`}
+                          className="p-2 rounded-lg bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 transition-colors"
+                          title="Call"
+                        >
+                          <Phone className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => {
+                            const firstName = member.full_name.split(' ')[0]
+                            const expiryDate = sub ? new Date(sub.end_date).toLocaleDateString() : 'soon'
+                            const hasSessions = sub?.sessions_remaining !== null && sub?.sessions_remaining !== undefined
+                            const message = hasSessions
+                              ? `Hey ${firstName}!%0A%0AJust a heads up - you've got ${sub?.sessions_remaining} session(s) left until ${expiryDate}. We'd hate to see you go!%0A%0AYour progress matters to us.%0A%0ARenew now and keep the momentum going.%0A%0AHit reply if you have any questions!`
+                              : `Hey ${firstName}!%0A%0AJust a heads up - your membership expires on ${expiryDate}. We'd hate to see you go!%0A%0AYour progress matters to us.%0A%0ARenew now and keep the momentum going.%0A%0AHit reply if you have any questions!`
+                            const phone = member.phone.replace(/[^0-9]/g, '')
+                            const formattedPhone = phone.startsWith('0') ? '2' + phone : phone
+                            const url = `https://wa.me/${formattedPhone}?text=${message}`
+                            window.open(url, '_blank')
+                          }}
+                          className="p-2 rounded-lg bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 transition-colors"
+                          title="Send WhatsApp"
+                        >
+                          <MessageCircle className="w-4 h-4" />
+                        </button>
+                      </div>
                     </div>
-                  )
-                })()}
+                    <div className="space-y-1 text-sm">
+                      {sub?.sessions_remaining !== null && sub?.sessions_remaining !== undefined && sub.sessions_remaining < LOW_SESSIONS_THRESHOLD && (
+                        <p className="text-amber-400">⚠️ Low Sessions: {sub.sessions_remaining} remaining</p>
+                      )}
+                      {sub && status.daysUntilExpiry !== null && status.daysUntilExpiry > 0 && status.daysUntilExpiry <= EXPIRING_SOON_DAYS && (
+                        <p className="text-red-400">⏰ Expires: {new Date(sub.end_date).toLocaleDateString()}</p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+                {expiringSoonMembers.length === 0 && (
+                  <div className="text-center py-8">
+                    <Clock className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
+                    <p className="text-muted-foreground">No members expiring soon</p>
+                  </div>
+                )}
               </div>
             </div>
             <div className="bg-secondary rounded-2xl p-5 border border-t1-red/10">
@@ -2787,86 +2853,55 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
               </h3>
               <p className="text-sm text-muted-foreground mb-6">Members with expired subscriptions or no sessions remaining (showing up to 50)</p>
               <div className="space-y-4">
-                {(() => {
-                  const now = new Date()
-                  const expiredMembers = members.filter(member => {
-                    const memberSub = subscriptions.find(s => s.member_id === member.id)
-                    if (!memberSub) return false
-                    const subscriptionExpired = new Date(memberSub.end_date) < now
-                    const noSessionsRemaining = memberSub.sessions_remaining === 0
-                    return subscriptionExpired || noSessionsRemaining
-                  }).slice(0, 50) // Limit to 50 members for performance
-                  return expiredMembers.map(member => {
-                    const memberSub = subscriptions.find(s => s.member_id === member.id)
-                    const isSessionsExpired = memberSub?.sessions_remaining === 0
-                    const isDateExpired = new Date(memberSub.end_date) < now
-                    
-                    return (
-                      <div key={member.id} className="bg-t1-black/50 rounded-xl p-4 border border-t1-red/20">
-                        <div className="flex items-center justify-between mb-3">
-                          <div>
-                            <h4 className="font-cinzel font-semibold">{member.full_name}</h4>
-                            <p className="text-sm text-muted-foreground">{member.member_id}</p>
-                          </div>
-                          <div className="flex gap-2">
-                            <button
-                              onClick={() => window.location.href = `tel:${member.phone}`}
-                              className="p-2 rounded-lg bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 transition-colors"
-                              title="Call"
-                            >
-                              <Phone className="w-4 h-4" />
-                            </button>
-                            <button
-                              onClick={() => {
-                                const firstName = member.full_name.split(' ')[0]
-                                let message = ''
-                                
-                                if (isSessionsExpired) {
-                                  message = `Hey ${firstName}!%0A%0AYou absolutely crushed it! You've completed all your sessions - that's incredible progress!%0A%0AYour trainers are ready to push you even further. Let's renew and build on that momentum!%0A%0AReply here and let's get you back on track!`
-                                } else {
-                                  message = `Hey ${firstName}!%0A%0AWe really miss having you at Triple One! Your goals matter to us, and we want to help you achieve them.%0A%0AYour membership expired on ${memberSub ? new Date(memberSub.end_date).toLocaleDateString() : 'recently'}, but it's never too late to come back.%0A%0ALet's renew and get back to crushing your fitness goals together!%0A%0AReply here and we'll get you sorted!`
-                                }
-                                
-                                const phone = member.phone.replace(/[^0-9]/g, '')
-                                const formattedPhone = phone.startsWith('0') ? '2' + phone : phone
-                                const url = `https://wa.me/${formattedPhone}?text=${message}`
-                                window.open(url, '_blank')
-                              }}
-                              className="p-2 rounded-lg bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 transition-colors"
-                              title="Send WhatsApp"
-                            >
-                              <MessageCircle className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </div>
-                        <div className="space-y-1 text-sm">
-                          {isSessionsExpired && (
-                            <p className="text-red-400">❌ Sessions Used: 0 remaining</p>
-                          )}
-                          {isDateExpired && (
-                            <p className="text-red-400">⏰ Expired: {new Date(memberSub.end_date).toLocaleDateString()}</p>
-                          )}
-                        </div>
+                {expiredMembers.map(({ member, sub, status }) => (
+                  <div key={member.id} className="bg-t1-black/50 rounded-xl p-4 border border-t1-red/20">
+                    <div className="flex items-center justify-between mb-3">
+                      <div>
+                        <h4 className="font-cinzel font-semibold">{member.full_name}</h4>
+                        <p className="text-sm text-muted-foreground">{member.member_id}</p>
                       </div>
-                    )
-                  })
-                })()}
-                {(() => {
-                  const now = new Date()
-                  const expiredMembers = members.filter(member => {
-                    const memberSub = subscriptions.find(s => s.member_id === member.id)
-                    if (!memberSub) return false
-                    const subscriptionExpired = new Date(memberSub.end_date) < now
-                    const noSessionsRemaining = memberSub.sessions_remaining === 0
-                    return subscriptionExpired || noSessionsRemaining
-                  })
-                  return expiredMembers.length === 0 && (
-                    <div className="text-center py-8">
-                      <AlertTriangle className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
-                      <p className="text-muted-foreground">No expired members</p>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => window.location.href = `tel:${member.phone}`}
+                          className="p-2 rounded-lg bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 transition-colors"
+                          title="Call"
+                        >
+                          <Phone className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => {
+                            const firstName = member.full_name.split(' ')[0]
+                            const message = status.isExhausted
+                              ? `Hey ${firstName}!%0A%0AYou absolutely crushed it! You've completed all your sessions - that's incredible progress!%0A%0AYour trainers are ready to push you even further. Let's renew and build on that momentum!%0A%0AReply here and let's get you back on track!`
+                              : `Hey ${firstName}!%0A%0AWe really miss having you at Triple One! Your goals matter to us, and we want to help you achieve them.%0A%0AYour membership expired on ${sub ? new Date(sub.end_date).toLocaleDateString() : 'recently'}, but it's never too late to come back.%0A%0ALet's renew and get back to crushing your fitness goals together!%0A%0AReply here and we'll get you sorted!`
+                            const phone = member.phone.replace(/[^0-9]/g, '')
+                            const formattedPhone = phone.startsWith('0') ? '2' + phone : phone
+                            const url = `https://wa.me/${formattedPhone}?text=${message}`
+                            window.open(url, '_blank')
+                          }}
+                          className="p-2 rounded-lg bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 transition-colors"
+                          title="Send WhatsApp"
+                        >
+                          <MessageCircle className="w-4 h-4" />
+                        </button>
+                      </div>
                     </div>
-                  )
-                })()}
+                    <div className="space-y-1 text-sm">
+                      {status.isExhausted && (
+                        <p className="text-red-400">❌ Sessions Used: 0 remaining</p>
+                      )}
+                      {status.isExpired && sub && (
+                        <p className="text-red-400">⏰ Expired: {new Date(sub.end_date).toLocaleDateString()}</p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+                {expiredMembers.length === 0 && (
+                  <div className="text-center py-8">
+                    <AlertTriangle className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
+                    <p className="text-muted-foreground">No expired members</p>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -2928,7 +2963,7 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
                 <div className="space-y-3">
                   {filteredMembers.map(member => {
                     const memberRecords = records.filter(r => r.member_id === member.id)
-                    const memberSub = subscriptions.find(s => s.member_id === member.id)
+                    const memberSub = pickPrimarySubscription(subscriptions, member.id)
                     const sharedSub = sharedSubscriptions.find(s => s.member_id === member.id)
                     const memberPayments = payments.filter(p => p.member_id === member.id)
                     const isExpired = memberSub ? new Date(memberSub.end_date) < new Date() : false
