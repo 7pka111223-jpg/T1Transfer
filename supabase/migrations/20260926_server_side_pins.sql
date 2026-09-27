@@ -83,6 +83,10 @@ select id, extensions.crypt(pin, extensions.gen_salt('bf', 8))
  where pin is not null and pin <> ''
 on conflict (admin_id) do nothing;
 
+-- The live admins.pin column is NOT NULL; allow null on both before emptying.
+alter table public.members alter column pin drop not null;
+alter table public.admins alter column pin drop not null;
+
 update public.members set pin = null where pin is not null;
 update public.admins set pin = null where pin is not null;
 
