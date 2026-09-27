@@ -9,11 +9,69 @@ export const GYM_WHATSAPP = '20122263231'
 export const LOW_SESSIONS_THRESHOLD = 4
 export const EXPIRING_SOON_DAYS = 7
 
-// Check-in windows. The venue QR is valid from 30 minutes before a session
-// starts until 30 minutes after it ends; a booked class opens 10 minutes before
-// it starts and closes at the end of the class.
-export const QR_CHECK_IN_GRACE_MS = 30 * 60 * 1000
+// Venue QR check-in hours, in gym time: every day except Friday, from 17:00
+// until 22:00, whatever the member's level or bookings. The database
+// (qr_check_in_open) is the authority; the app checks first only to explain.
+export const GYM_TIME_ZONE = 'Africa/Cairo'
+export const QR_CHECK_IN_OPENS_HOUR = 17
+export const QR_CHECK_IN_CLOSES_HOUR = 22
+export const QR_CHECK_IN_CLOSED_WEEKDAY = 5 // Friday (0 = Sunday)
+
+// Check-ins of any kind per gym day: 1, or 2 on Mondays. The database
+// (daily_check_in_limit) enforces it; this only words the refusal.
+export const dailyCheckInLimitMessage = (limit: number) =>
+  limit > 1
+    ? `You've already checked in ${limit} times today. That's the daily limit — see you tomorrow.`
+    : "You've already checked in today. Only one check-in is allowed per day — see you tomorrow."
+
+// True when a Supabase error is the database refusing a check-in over the cap.
+export const isDailyCheckInLimitError = (error: { message?: string } | null | undefined) =>
+  Boolean(error?.message?.includes('daily_limit_reached'))
+
+// A booked class opens 10 minutes before it starts and closes at its end.
 export const CLASS_CHECK_IN_OPENS_BEFORE_MS = 10 * 60 * 1000
+
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+
+const formatHour = (hour: number) => `${hour % 12 || 12}:00 ${hour < 12 ? 'AM' : 'PM'}`
+
+// Weekday (0 = Sunday) and hour of `at` on the gym's clock, whatever the
+// device's own time zone is.
+const gymClock = (at: Date) => {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: GYM_TIME_ZONE,
+    weekday: 'long',
+    hour: 'numeric',
+    hourCycle: 'h23',
+  }).formatToParts(at)
+  const weekday = WEEKDAYS.indexOf(parts.find(p => p.type === 'weekday')?.value ?? '')
+  const hour = Number(parts.find(p => p.type === 'hour')?.value)
+  return { weekday, hour }
+}
+
+// Null while QR check-in is open, otherwise a message saying when it opens.
+export const getQrCheckInClosedMessage = (at: Date = new Date()): string | null => {
+  const { weekday, hour } = gymClock(at)
+  const opens = formatHour(QR_CHECK_IN_OPENS_HOUR)
+  const closes = formatHour(QR_CHECK_IN_CLOSES_HOUR)
+  const nextOpenDay = (from: number) => {
+    const day = (from + 1) % 7
+    return day === QR_CHECK_IN_CLOSED_WEEKDAY ? (day + 1) % 7 : day
+  }
+
+  if (weekday === QR_CHECK_IN_CLOSED_WEEKDAY) {
+    return `Check-in is closed on ${WEEKDAYS[weekday]}s. It opens ${WEEKDAYS[nextOpenDay(weekday)]} at ${opens}.`
+  }
+  if (hour < QR_CHECK_IN_OPENS_HOUR) {
+    return `Check-in opens at ${opens} today (open ${opens} – ${closes}).`
+  }
+  if (hour >= QR_CHECK_IN_CLOSES_HOUR) {
+    const next = nextOpenDay(weekday)
+    const when = next === (weekday + 1) % 7 ? 'tomorrow' : WEEKDAYS[next]
+    return `Check-in closed at ${closes}. It opens ${when} at ${opens}.`
+  }
+  return null
+}
 
 export type SubscriptionLike = {
   sessions_remaining: number | null

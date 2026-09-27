@@ -1,3 +1,9 @@
+      // Open every day but Friday, 5–10 pm gym time, for every level and with
+      // or without a booking. The database enforces the same hours.
+      const closedMessage = getQrCheckInClosedMessage()
+      if (closedMessage) throw new Error(closedMessage)
+
+      const now = new Date()
   // Helper to get the next Thursday from today
   function getNextThursday() {
     const now = new Date()
@@ -29,8 +35,10 @@ import { QrScannerView } from './QrScanner'
 import {
   getSubscriptionStatus,
   GYM_WHATSAPP,
-  QR_CHECK_IN_GRACE_MS,
   CLASS_CHECK_IN_OPENS_BEFORE_MS,
+  getQrCheckInClosedMessage,
+  dailyCheckInLimitMessage,
+  isDailyCheckInLimitError,
   type SubscriptionStatus,
 } from '../lib/gym'
 
@@ -42,17 +50,6 @@ type MemberDashboardProps = {
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-// Check-in opens 30 minutes before a session starts and closes 30 minutes after it ends.
-const CHECK_IN_GRACE_MS = QR_CHECK_IN_GRACE_MS
-
-type CheckInWindow = { opensAt: Date; closesAt: Date; label: string }
-
-const formatClock = (date: Date) =>
-  date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-
-const toLocalDateStr = (date: Date) =>
-  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 
 // Accepts a bare branch id, "branch:<id>", or the QR deep link /?branch=<id>.
 const parseBranchCode = (value: string): string | null => {
@@ -71,32 +68,6 @@ const parseBranchCode = (value: string): string | null => {
   }
 
   return UUID_RE.test(raw) ? raw : null
-}
-
-// Today's sessions at this branch, each widened by the check-in grace period.
-const loadBranchCheckInWindows = async (branchId: string): Promise<CheckInWindow[]> => {
-  const today = new Date()
-  const dateStr = toLocalDateStr(today)
-
-  const { data } = await supabase
-    .from('group_classes')
-    .select('start_time, end_time')
-    .eq('is_active', true)
-    .eq('branch_id', branchId)
-    .eq('day_of_week', today.getDay())
-
-  return (data || [])
-    .filter((c: any) => c.start_time && c.end_time)
-    .map((c: any) => {
-      const start = new Date(`${dateStr}T${c.start_time}`)
-      const end = new Date(`${dateStr}T${c.end_time}`)
-      return {
-        opensAt: new Date(start.getTime() - CHECK_IN_GRACE_MS),
-        closesAt: new Date(end.getTime() + CHECK_IN_GRACE_MS),
-        label: `${formatClock(start)} – ${formatClock(end)}`
-      }
-    })
-    .sort((a, b) => a.opensAt.getTime() - b.opensAt.getTime())
 }
 
 type Subscription = {
@@ -741,17 +712,6 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
 
       const nowIso = now.toISOString()
 
-      // Update booking status
-      const { error: bookingError } = await supabase
-        .from('class_bookings')
-        .update({ 
-          status: 'attended', 
-          checked_in_at: nowIso 
-        })
-        .eq('id', validBooking.id)
-
-      if (bookingError) throw bookingError
-
       // Record attendance
       const { data: insertedAttendance, error: attendanceError } = await supabase
         .from('attendance_records')
@@ -765,7 +725,21 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
         .select('id')
         .single()
       
+      if (isDailyCheckInLimitError(attendanceError)) {
+        throw new Error(dailyCheckInLimitMessage(Number(attendanceError.details) || 1))
+      }
       if (attendanceError) throw attendanceError
+
+      // Mark the booking attended only once the check-in itself is recorded
+      const { error: bookingError } = await supabase
+        .from('class_bookings')
+        .update({ 
+          status: 'attended', 
+          checked_in_at: nowIso 
+        })
+        .eq('id', validBooking.id)
+
+      if (bookingError) throw bookingError
       
       let newSessionsRemaining = activeSub.sessions_remaining
       if (isSessionBased) {
@@ -875,22 +849,12 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
 
       if (!branch) throw new Error('That is not a valid Triple One check-in code.')
 
-      // Check-in only opens around today's sessions at this branch
+      // Open every day but Friday, 5–10 pm gym time, for every level and with
+      // or without a booking. The database enforces the same hours.
+      const closedMessage = getQrCheckInClosedMessage()
+      if (closedMessage) throw new Error(closedMessage)
+
       const now = new Date()
-      const windows = await loadBranchCheckInWindows(branchId)
-      const openWindow = windows.find((w) => now >= w.opensAt && now <= w.closesAt)
-
-      if (!openWindow) {
-        const upcoming = windows.find((w) => now < w.opensAt)
-        if (upcoming) {
-          throw new Error(`Check-in opens at ${formatClock(upcoming.opensAt)} for the ${upcoming.label} session.`)
-        }
-        if (windows.length > 0) {
-          throw new Error("Check-in for today's sessions has closed.")
-        }
-        throw new Error('There are no sessions at this branch today, so check-in is closed.')
-      }
-
       const nowIso = now.toISOString()
 
       // Atomic, idempotent, capped server-side check-in: it records attendance
@@ -902,12 +866,12 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
       })
       if (rpcError) throw rpcError
 
+      if (rpcData?.outside_hours) {
+        throw new Error(getQrCheckInClosedMessage() ?? 'Check-in is closed right now.')
+      }
+
       if (rpcData?.daily_limit_reached) {
-        throw new Error(
-          rpcData.daily_limit > 1
-            ? `You've already checked in ${rpcData.daily_limit} times today. That's the daily limit — see you tomorrow.`
-            : "You've already checked in today. Only one QR check-in is allowed per day — see you tomorrow."
-        )
+        throw new Error(dailyCheckInLimitMessage(rpcData.daily_limit))
       }
 
       const attendanceId: string | null = rpcData?.attendance_id ?? null
@@ -1035,13 +999,6 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
       }
 
       const nowIso = new Date().toISOString()
-      const { error: bookingError } = await supabase
-        .from('class_bookings')
-        .update({ status: 'attended', checked_in_at: nowIso })
-        .eq('id', booking.id)
-
-      if (bookingError) throw bookingError
-
       const { data: insertedAttendance, error: attendanceError } = await supabase
         .from('attendance_records')
         .insert({
@@ -1052,7 +1009,18 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
         })
         .select('id')
         .single()
+      if (isDailyCheckInLimitError(attendanceError)) {
+        throw new Error(dailyCheckInLimitMessage(Number(attendanceError.details) || 1))
+      }
       if (attendanceError) throw attendanceError
+
+      // Mark the booking attended only once the check-in itself is recorded
+      const { error: bookingError } = await supabase
+        .from('class_bookings')
+        .update({ status: 'attended', checked_in_at: nowIso })
+        .eq('id', booking.id)
+
+      if (bookingError) throw bookingError
 
       let newSessionsRemaining = activeSub.sessions_remaining
       if (isSessionBased) {
