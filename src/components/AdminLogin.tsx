@@ -9,6 +9,8 @@ export type AdminData = {
   id: string
   full_name: string
   email: string
+  // Proof of login, issued by the admin_login RPC.
+  session_token?: string
 }
 
 type AdminLoginProps = {
@@ -28,23 +30,21 @@ export function AdminLogin({ onBack, onLogin }: AdminLoginProps) {
     setIsLoading(true)
 
     try {
-      const { data, error: queryError } = await supabase
-        .from('admins')
-        .select('id, username, full_name, email, pin')
-        .ilike('username', username.trim())
-        .single()
+      const { data, error: rpcError } = await supabase.rpc('admin_login', {
+        p_username: username,
+        p_pin: pin,
+      })
 
-      if (queryError || !data || data.pin !== pin) {
-        setError('Invalid username or PIN')
-        setIsLoading(false)
+      if (rpcError || !data) throw rpcError ?? new Error('No response')
+
+      if (data.error) {
+        setError(data.error === 'locked'
+          ? 'Too many wrong PINs. Try again in 15 minutes.'
+          : 'Invalid username or PIN')
         return
       }
 
-      onLogin({
-        id: data.id,
-        full_name: data.full_name || data.username,
-        email: data.email || ''
-      })
+      onLogin({ ...data.admin, session_token: data.token })
     } catch (err) {
       console.error(err)
       setError('Login failed. Please try again.')

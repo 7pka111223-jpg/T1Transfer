@@ -5,6 +5,13 @@ import { Input } from './ui/input'
 import { Label } from './ui/label'
 import { supabase } from '../lib/supabase'
 
+const activationErrors: Record<string, string> = {
+  not_found: 'Member ID not found',
+  already_active: 'Account is already activated',
+  phone_mismatch: 'Phone number does not match our records',
+  invalid_pin_format: 'PIN must be exactly 4 digits',
+}
+
 type AccountActivationProps = {
   onBack: () => void
   onSuccess: () => void
@@ -20,7 +27,6 @@ export function AccountActivation({ onBack, onSuccess }: AccountActivationProps)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState(false)
-  const [memberUuid, setMemberUuid] = useState('')
 
   const handleVerify = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -28,31 +34,18 @@ export function AccountActivation({ onBack, onSuccess }: AccountActivationProps)
     setIsSubmitting(true)
 
     try {
-      const { data, error: fetchError } = await supabase
-        .from('members')
-        .select('id, status, phone')
-        .eq('member_id', memberId.toUpperCase())
-        .single()
+      const { data, error: rpcError } = await supabase.rpc('check_member_activation', {
+        p_member_code: memberId,
+        p_phone: phone,
+      })
 
-      if (fetchError || !data) {
-        setError('Member ID not found')
+      if (rpcError || !data) throw rpcError ?? new Error('No response')
+
+      if (data.error) {
+        setError(activationErrors[data.error] ?? 'Verification failed. Please try again.')
         return
       }
 
-      if (data.status !== 'pending') {
-        setError('Account is already activated')
-        return
-      }
-
-      const cleanPhone = phone.replace(/\D/g, '')
-      const storedPhone = data.phone.replace(/\D/g, '')
-      
-      if (!storedPhone.includes(cleanPhone) && !cleanPhone.includes(storedPhone)) {
-        setError('Phone number does not match our records')
-        return
-      }
-
-      setMemberUuid(data.id)
       setStep('pin')
     } catch (err) {
       setError('Verification failed. Please try again.')
@@ -79,12 +72,17 @@ export function AccountActivation({ onBack, onSuccess }: AccountActivationProps)
     setIsSubmitting(true)
 
     try {
-      const { error: updateError } = await supabase
-        .from('members')
-        .update({ pin: pin, status: 'active' })
-        .eq('id', memberUuid)
+      const { data, error: rpcError } = await supabase.rpc('activate_member', {
+        p_member_code: memberId,
+        p_phone: phone,
+        p_pin: pin,
+      })
 
-      if (updateError) throw updateError
+      if (rpcError || !data) throw rpcError ?? new Error('No response')
+      if (data.error) {
+        setError(activationErrors[data.error] ?? 'Failed to set PIN. Please try again.')
+        return
+      }
       setSuccess(true)
     } catch (err) {
       setError('Failed to set PIN. Please try again.')

@@ -26,6 +26,9 @@ export type MemberData = {
   emergency_contact: string | null
   loyalty_points: number | null
   branch_id: string | null
+  // Proof of login, issued by the member_login RPC. Absent on snapshots
+  // saved before server-side PINs; those are signed out on boot.
+  session_token?: string
 }
 
 export function MemberLogin({ onBack, onLogin, onActivate }: MemberLoginProps) {
@@ -46,44 +49,42 @@ export function MemberLogin({ onBack, onLogin, onActivate }: MemberLoginProps) {
     setIsSubmitting(true)
 
     try {
-      const { data, error: fetchError } = await supabase
-        .from('members')
-        .select('*')
-        .eq('member_id', memberId.toUpperCase())
-        .single()
+      const { data, error: rpcError } = await supabase.rpc('member_login', {
+        p_member_code: memberId,
+        p_pin: pin,
+      })
 
-      if (fetchError || !data) {
-        setError('Member ID not found')
+      if (rpcError || !data) throw rpcError ?? new Error('No response')
+
+      if (data.error) {
+        const messages: Record<string, string> = {
+          not_found: 'Member ID not found',
+          pending: 'Account not activated. Please activate your account first.',
+          locked: 'Too many wrong PINs. Try again in 15 minutes.',
+        }
+        setError(messages[data.error] ?? 'Invalid PIN')
         return
       }
 
-      if (data.status === 'pending') {
-        setError('Account not activated. Please activate your account first.')
-        return
-      }
-
-      if (data.pin !== pin) {
-        setError('Invalid PIN')
-        return
-      }
-
-      // Pass an explicit snapshot WITHOUT the PIN — this object is persisted
-      // to localStorage by App, and secrets must never touch client storage.
+      // The server never returns the PIN. This snapshot is persisted to
+      // localStorage by App; the token is what proves the session.
+      const m = data.member
       onLogin({
-        id: data.id,
-        member_id: data.member_id,
-        full_name: data.full_name,
-        phone: data.phone,
-        email: data.email,
-        date_of_birth: data.date_of_birth,
-        gender: data.gender,
-        status: data.status,
-        level: data.level,
-        profile_image_url: data.profile_image_url,
-        medical_notes: data.medical_notes,
-        emergency_contact: data.emergency_contact,
-        loyalty_points: data.loyalty_points,
-        branch_id: data.branch_id,
+        id: m.id,
+        member_id: m.member_id,
+        full_name: m.full_name,
+        phone: m.phone,
+        email: m.email,
+        date_of_birth: m.date_of_birth,
+        gender: m.gender,
+        status: m.status,
+        level: m.level,
+        profile_image_url: m.profile_image_url,
+        medical_notes: m.medical_notes,
+        emergency_contact: m.emergency_contact,
+        loyalty_points: m.loyalty_points,
+        branch_id: m.branch_id,
+        session_token: data.token,
       })
     } catch (err) {
       setError('Login failed. Please try again.')

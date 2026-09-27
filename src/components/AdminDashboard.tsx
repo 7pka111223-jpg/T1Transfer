@@ -16,6 +16,7 @@ type AdminDashboardProps = {
     id: string
     full_name: string
     email: string
+    session_token?: string
   }
   onLogout: () => void
 }
@@ -37,7 +38,6 @@ type Member = {
   level: string
   status: string
   loyalty_points: number
-  pin: string | null
   medical_notes: string | null
   emergency_contact: string | null
   branch_id: string | null
@@ -549,7 +549,7 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
     
     const [movementsRes, membersRes, recordsRes, assessmentsRes, attendanceRes, subscriptionsRes, paymentsRes, packagesRes, sessionsRes, bookingsRes, branchesRes, sharedSubsRes] = await Promise.all([
       supabase.from('movements').select('*').order('name'),
-      supabase.from('members').select('id, member_id, full_name, phone, email, level, status, loyalty_points, pin, medical_notes, emergency_contact, branch_id').order('member_id', { ascending: false }),
+      supabase.from('members').select('id, member_id, full_name, phone, email, level, status, loyalty_points, medical_notes, emergency_contact, branch_id').order('member_id', { ascending: false }),
       supabase.from('personal_records').select('*, member:members(full_name, member_id), movement:movements(name)').order('recorded_at', { ascending: false }),
       supabase.from('assessment_sessions').select('*').eq('archived', false).order('created_at', { ascending: false }),
       supabase.from('attendance_records').select('*, member:members(full_name, member_id)').order('check_in_time', { ascending: false }).limit(50),
@@ -710,7 +710,6 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
           full_name: lead.full_name,
           phone: lead.phone,
           email: editLeadForm.email.trim() || null,
-          pin: null,
           level: newUserForm.level,
           status: 'pending',
           branch_id: branchId,
@@ -1059,7 +1058,9 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
 
         if (error) throw error
 
-        const batch = (data as AttendanceRecord[]) || []
+        // member is a many-to-one embed, so PostgREST returns an object; the
+        // untyped client infers an array, hence the unknown hop.
+        const batch = (data as unknown as AttendanceRecord[]) || []
         rows = rows.concat(batch)
         if (batch.length < pageSize) break
         start += pageSize
@@ -2923,6 +2924,7 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
             {selectedMember ? (
               <MemberProfilePanel 
                 member={selectedMember} 
+                adminToken={admin.session_token}
                 onBack={() => setSelectedMember(null)}
               />
             ) : (

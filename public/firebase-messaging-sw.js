@@ -1,6 +1,6 @@
 // Offline functionality
 const CACHE_NAME = 't1-app-cache-v1';
-const OFFLINE_URL = '/offline.html';
+const OFFLINE_URL = '/offline.html'; // not shipped; the inline page below is the fallback
 
 // Cache essential files during installation
 self.addEventListener('install', (event) => {
@@ -8,7 +8,6 @@ self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
       return cache.addAll([
-        OFFLINE_URL,
         '/t1 logo/T1 LOGO DARK.png',
         '/icon-192x192.png',
         '/icon-512x512.png',
@@ -98,65 +97,4 @@ self.addEventListener('activate', (event) => {
       return self.clients.claim();
     })
   );
-});
-
-// Firebase messaging (only if available)
-try {
-  importScripts('https://www.gstatic.com/firebasejs/9.0.0/firebase-app-compat.js');
-  importScripts('https://www.gstatic.com/firebasejs/9.0.0/firebase-messaging-compat.js');
-
-  // Only initialize Firebase if environment variables are available
-  if (self.VITE_FIREBASE_API_KEY) {
-    firebase.initializeApp({
-      apiKey: self.VITE_FIREBASE_API_KEY,
-      authDomain: self.VITE_FIREBASE_AUTH_DOMAIN,
-      projectId: self.VITE_FIREBASE_PROJECT_ID,
-      storageBucket: self.VITE_FIREBASE_STORAGE_BUCKET,
-      messagingSenderId: self.VITE_FIREBASE_MESSAGING_SENDER_ID,
-      appId: self.VITE_FIREBASE_APP_ID,
-    });
-
-    const messaging = firebase.messaging();
-
-    messaging.onBackgroundMessage((payload) => {
-      console.log('Received background message:', payload);
-
-      const notificationTitle = payload.notification?.title || 'Triple One Alert';
-      const notificationOptions = {
-        body: payload.notification?.body || 'You have a new notification',
-        icon: '/icon-192x192.png',
-        badge: '/icon-192x192.png',
-        vibrate: [100, 50, 100],
-        data: payload.data,
-        actions: [
-          { action: 'open', title: 'Open App' },
-          { action: 'dismiss', title: 'Dismiss' }
-        ]
-      };
-
-      self.registration.showNotification(notificationTitle, notificationOptions);
-    });
-  } else {
-    console.log('Firebase environment variables not available, skipping Firebase initialization');
-  }
-} catch (error) {
-  console.log('Firebase not available or failed to load:', error);
-}
-
-self.addEventListener('notificationclick', (event) => {
-  event.notification.close();
-
-  if (event.action === 'open' || !event.action) {
-    event.waitUntil(
-      clients.matchAll({ type: 'window', includeUncontrolled: true })
-        .then((clientList) => {
-          for (const client of clientList) {
-            if ('focus' in client) {
-              return client.focus();
-            }
-          }
-          return clients.openWindow('/');
-        })
-    );
-  }
 });

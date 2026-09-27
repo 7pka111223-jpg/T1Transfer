@@ -1,13 +1,15 @@
-import { useState, useEffect, useLayoutEffect } from 'react'
+import { useState, useEffect, lazy, Suspense } from 'react'
 import { LandingPage } from './components/LandingPage'
-import { AssessmentBooking } from './components/AssessmentBooking'
 import { MemberLogin, MemberData } from './components/MemberLogin'
 import { AccountActivation } from './components/AccountActivation'
 import { AdminLogin, AdminData } from './components/AdminLogin'
-import { AdminDashboard } from './components/AdminDashboard'
-import { MemberDashboard } from './components/MemberDashboard'
 import { MemberApp } from './components/MemberApp'
 import { supabase } from './lib/supabase'
+
+// The big screens load on demand so the landing page and login stay light.
+const AssessmentBooking = lazy(() => import('./components/AssessmentBooking').then(m => ({ default: m.AssessmentBooking })))
+const AdminDashboard = lazy(() => import('./components/AdminDashboard').then(m => ({ default: m.AdminDashboard })))
+const MemberDashboard = lazy(() => import('./components/MemberDashboard').then(m => ({ default: m.MemberDashboard })))
 
 type View = 
   | 'landing'
@@ -142,53 +144,46 @@ export default function App() {
     }
   }, [currentAdmin])
 
-  // Re-validate restored sessions against the database on boot. A stored id
-  // that no longer exists (or is pending) is cleared and falls back to
-  // landing, so deleted/deactivated accounts can never boot into a
-  // dashboard. Transport failures leave the snapshot untouched for retry.
+  // Re-validate restored sessions against the database on boot. Each snapshot
+  // carries the session token issued at login; a missing, revoked or unknown
+  // token (or a member back in 'pending') clears that side and falls back to
+  // landing. Snapshots from before server-side PINs have no token, so those
+  // users sign in once more. Transport failures leave the snapshot untouched
+  // for retry.
   useEffect(() => {
     let cancelled = false
-    const readId = (key: string): string | null => {
+    const readToken = (key: string): string | null => {
       try {
         const raw = localStorage.getItem(key)
         if (!raw) return null
-        const id = (JSON.parse(raw) as { id?: unknown }).id
-        return typeof id === 'string' && id.length > 0 ? id : null
+        const token = (JSON.parse(raw) as { session_token?: unknown }).session_token
+        return typeof token === 'string' && token.length > 0 ? token : null
       } catch {
         return null
       }
     }
+    const validate = async (key: string, rpc: 'member_session' | 'admin_session', clear: () => void) => {
+      if (!localStorage.getItem(key)) return
+      const token = readToken(key)
+      if (!token) {
+        localStorage.removeItem(key)
+        if (!cancelled) clear()
+        return
+      }
+      try {
+        const { data, error } = await supabase.rpc(rpc, { p_token: token })
+        if (error) return // Transport/server failure: keep the snapshot for retry.
+        if (!data) {
+          localStorage.removeItem(key)
+          if (!cancelled) clear()
+        }
+      } catch {
+        // Transport failure: keep the snapshot for retry on next open.
+      }
+    }
     const validateSessions = async () => {
-      const memberId = readId('t1_member')
-      if (localStorage.getItem('t1_member') && !memberId) {
-        localStorage.removeItem('t1_member')
-        if (!cancelled) setCurrentMember(null)
-      } else if (memberId) {
-        try {
-          const { data, error } = await supabase.from('members').select('id,status').eq('id', memberId).single()
-          if (error || !data || data.status === 'pending') {
-            localStorage.removeItem('t1_member')
-            if (!cancelled) setCurrentMember(null)
-          }
-        } catch {
-          // Transport failure: keep the snapshot for retry on next open.
-        }
-      }
-      const adminId = readId('t1_admin')
-      if (localStorage.getItem('t1_admin') && !adminId) {
-        localStorage.removeItem('t1_admin')
-        if (!cancelled) setCurrentAdmin(null)
-      } else if (adminId) {
-        try {
-          const { data, error } = await supabase.from('admins').select('id').eq('id', adminId).single()
-          if (error || !data) {
-            localStorage.removeItem('t1_admin')
-            if (!cancelled) setCurrentAdmin(null)
-          }
-        } catch {
-          // Transport failure: keep the snapshot for retry on next open.
-        }
-      }
+      await validate('t1_member', 'member_session', () => setCurrentMember(null))
+      await validate('t1_admin', 'admin_session', () => setCurrentAdmin(null))
       // The QR check-in flow owns the view while its payload is pending.
       if (cancelled || pendingCheckIn) return
       const m = localStorage.getItem('t1_member')
@@ -223,6 +218,10 @@ export default function App() {
   }
 
   const handleLogout = () => {
+    // Revoke the server-side sessions; the local sign-out doesn't wait on it.
+    for (const token of [currentMember?.session_token, currentAdmin?.session_token]) {
+      if (token) supabase.rpc('end_session', { p_token: token }).then(undefined, () => {})
+    }
     setCurrentMember(null)
     setCurrentAdmin(null)
     setCurrentView('landing')
@@ -231,117 +230,125 @@ export default function App() {
     localStorage.removeItem('t1_view')
   }
 
-  switch (currentView) {
-    case 'landing':
-      return isPwa ? (
-        <div className={isPwa && currentView !== 'landing' ? 'pwa-no-select' : ''}>
-          <MemberApp
-            onSignIn={() => setCurrentView('login')}
-            onSignUp={() => setCurrentView('activate')}
+  const renderView = () => {
+    switch (currentView) {
+      case 'landing':
+        return isPwa ? (
+          <div className={isPwa && currentView !== 'landing' ? 'pwa-no-select' : ''}>
+            <MemberApp
+              onSignIn={() => setCurrentView('login')}
+              onSignUp={() => setCurrentView('activate')}
+            />
+          </div>
+        ) : (
+          <div className={isPwa && currentView !== 'landing' ? 'pwa-no-select' : ''}>
+            <LandingPage
+              onBookAssessment={() => setCurrentView('assessment')}
+              onMemberLogin={() => setCurrentView('login')}
+              onAdminLogin={() => setCurrentView('admin-login')}
+            />
+          </div>
+        )
+    
+      case 'assessment':
+        return (
+          <div className={isPwa && currentView === 'assessment' ? 'pwa-no-select' : ''}>
+            <AssessmentBooking
+              onBack={() => setCurrentView('landing')}
+              onSuccess={() => setCurrentView('landing')}
+            />
+          </div>
+        )
+    
+      case 'login':
+        return (
+          <div className={isPwa && currentView === 'login' ? 'pwa-no-select' : ''}>
+            <MemberLogin
+              onBack={() => setCurrentView('landing')}
+              onLogin={handleMemberLogin}
+              onActivate={() => setCurrentView('activate')}
+            />
+          </div>
+        )
+    
+      case 'member-app':
+        return (
+          <div className={isPwa && currentView !== 'member-app' ? 'pwa-no-select' : ''}>
+            <MemberApp
+              onSignIn={() => setCurrentView('login')}
+              onSignUp={() => setCurrentView('activate')}
+            />
+          </div>
+        )
+    
+      case 'activate':
+        return (
+          <div className={isPwa && currentView !== 'activate' ? 'pwa-no-select' : ''}>
+            <AccountActivation
+              onBack={() => setCurrentView('landing')}
+              onSuccess={() => setCurrentView('login')}
+            />
+          </div>
+        )
+    
+      case 'admin-login':
+        return (
+          <div className={isPwa && currentView !== 'admin-login' ? 'pwa-no-select' : ''}>
+            <AdminLogin
+              onBack={() => setCurrentView('landing')}
+              onLogin={handleAdminLogin}
+            />
+          </div>
+        )
+    
+      case 'admin-dashboard':
+        return currentAdmin ? (
+          <AdminDashboard
+            admin={currentAdmin}
+            onLogout={handleLogout}
           />
-        </div>
-      ) : (
-        <div className={isPwa && currentView !== 'landing' ? 'pwa-no-select' : ''}>
+        ) : (
           <LandingPage
             onBookAssessment={() => setCurrentView('assessment')}
             onMemberLogin={() => setCurrentView('login')}
             onAdminLogin={() => setCurrentView('admin-login')}
           />
-        </div>
-      )
+        )
     
-    case 'assessment':
-      return (
-        <div className={isPwa && currentView === 'assessment' ? 'pwa-no-select' : ''}>
-          <AssessmentBooking
-            onBack={() => setCurrentView('landing')}
-            onSuccess={() => setCurrentView('landing')}
+      case 'member-dashboard':
+        return currentMember ? (
+          <MemberDashboard
+            member={currentMember}
+            onLogout={handleLogout}
+            checkInPayload={pendingCheckIn}
+            onCheckInHandled={() => setPendingCheckIn(null)}
           />
-        </div>
-      )
+        ) : (
+          <div className={isPwa ? 'pwa-no-select' : ''}>
+            <LandingPage
+              onBookAssessment={() => setCurrentView('assessment')}
+              onMemberLogin={() => setCurrentView('login')}
+              onAdminLogin={() => setCurrentView('admin-login')}
+            />
+          </div>
+        )
     
-    case 'login':
-      return (
-        <div className={isPwa && currentView === 'login' ? 'pwa-no-select' : ''}>
-          <MemberLogin
-            onBack={() => setCurrentView('landing')}
-            onLogin={handleMemberLogin}
-            onActivate={() => setCurrentView('activate')}
-          />
-        </div>
-      )
-    
-    case 'member-app':
-      return (
-        <div className={isPwa && currentView !== 'member-app' ? 'pwa-no-select' : ''}>
-          <MemberApp
-            onSignIn={() => setCurrentView('login')}
-            onSignUp={() => setCurrentView('activate')}
-          />
-        </div>
-      )
-    
-    case 'activate':
-      return (
-        <div className={isPwa && currentView !== 'activate' ? 'pwa-no-select' : ''}>
-          <AccountActivation
-            onBack={() => setCurrentView('landing')}
-            onSuccess={() => setCurrentView('login')}
-          />
-        </div>
-      )
-    
-    case 'admin-login':
-      return (
-        <div className={isPwa && currentView !== 'admin-login' ? 'pwa-no-select' : ''}>
-          <AdminLogin
-            onBack={() => setCurrentView('landing')}
-            onLogin={handleAdminLogin}
-          />
-        </div>
-      )
-    
-    case 'admin-dashboard':
-      return currentAdmin ? (
-        <AdminDashboard
-          admin={currentAdmin}
-          onLogout={handleLogout}
-        />
-      ) : (
-        <LandingPage
-          onBookAssessment={() => setCurrentView('assessment')}
-          onMemberLogin={() => setCurrentView('login')}
-          onAdminLogin={() => setCurrentView('admin-login')}
-        />
-      )
-    
-    case 'member-dashboard':
-      return currentMember ? (
-        <MemberDashboard
-          member={currentMember}
-          onLogout={handleLogout}
-          checkInPayload={pendingCheckIn}
-          onCheckInHandled={() => setPendingCheckIn(null)}
-        />
-      ) : (
-        <div className={isPwa && currentView !== 'admin-dashboard' ? 'pwa-no-select' : ''}>
-          <LandingPage
-            onBookAssessment={() => setCurrentView('assessment')}
-            onMemberLogin={() => setCurrentView('login')}
-            onAdminLogin={() => setCurrentView('admin-login')}
-          />
-        </div>
-      )
-    
-    default:
-      return (
-        <div className={isPwa && currentView !== 'admin-dashboard' ? 'pwa-no-select' : ''}>
-          <LandingPage
-            onBookAssessment={() => setCurrentView('assessment')}
-            onMemberLogin={() => setCurrentView('login')}
-            onAdminLogin={() => setCurrentView('admin-login')}
-          />
-        </div>
-      )
+      default:
+        return (
+          <div className={isPwa && currentView !== 'admin-dashboard' ? 'pwa-no-select' : ''}>
+            <LandingPage
+              onBookAssessment={() => setCurrentView('assessment')}
+              onMemberLogin={() => setCurrentView('login')}
+              onAdminLogin={() => setCurrentView('admin-login')}
+            />
+          </div>
+        )
+    }
   }
+
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-t1-black" />}>
+      {renderView()}
+    </Suspense>
+  )
 }

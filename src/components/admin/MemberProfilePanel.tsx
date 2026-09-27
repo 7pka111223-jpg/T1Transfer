@@ -47,10 +47,11 @@ type Page = 'overview' | 'payments' | 'prs' | 'medical' | 'emergency'
 
 type MemberProfilePanelProps = {
   member: Member
+  adminToken?: string
   onBack: () => void
 }
 
-export function MemberProfilePanel({ member, onBack }: MemberProfilePanelProps) {
+export function MemberProfilePanel({ member, adminToken, onBack }: MemberProfilePanelProps) {
   const [currentPage, setCurrentPage] = useState<Page>('overview')
   const [payments, setPayments] = useState<ManualPayment[]>([])
   const [prs, setPrs] = useState<PersonalRecord[]>([])
@@ -188,12 +189,13 @@ export function MemberProfilePanel({ member, onBack }: MemberProfilePanelProps) 
     setResetPinLoading(true)
     setSaveError('')
     try {
-      const { error } = await supabase
-        .from('members')
-        .update({ pin: null, status: 'pending' })
-        .eq('id', member.id)
+      const { data, error } = await supabase.rpc('admin_reset_member_pin', {
+        p_token: adminToken ?? null,
+        p_member_id: member.id,
+      })
 
       if (error) throw error
+      if (data?.error) throw new Error(data.error)
       alert(`PIN reset for ${member.full_name}. Member must complete account activation on next login.`)
       member.status = 'pending'
     } catch (err) {
