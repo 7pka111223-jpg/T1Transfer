@@ -1,9 +1,3 @@
-      // Open every day but Friday, 5–10 pm gym time, for every level and with
-      // or without a booking. The database enforces the same hours.
-      const closedMessage = getQrCheckInClosedMessage()
-      if (closedMessage) throw new Error(closedMessage)
-
-      const now = new Date()
   // Helper to get the next Thursday from today
   function getNextThursday() {
     const now = new Date()
