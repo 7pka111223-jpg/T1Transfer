@@ -64,6 +64,9 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "vite build"
+    "build": "vite build",
+    "typecheck": "tsc -p tsconfig.app.json --noEmit",
+    "smoke": "node scripts/smoke.mjs",
+    "check": "npm run typecheck && npm run build && npm run smoke"
   }
 }

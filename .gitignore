@@ -29,3 +29,6 @@ supabase/.temp/
 
 # TypeScript build cache
 *.tsbuildinfo
+
+# Smoke test build output
+.smoke-dist
