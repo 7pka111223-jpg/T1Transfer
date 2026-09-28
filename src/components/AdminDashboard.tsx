@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { ArrowLeft, Plus, Trash2, Edit2, Check, X, Dumbbell, Users, TrendingUp, Settings, Bell, ChevronRight, Search, UserPlus, CreditCard, Star, Activity, Clock, Award, Calendar, Shield, DollarSign, Phone, MessageCircle, XCircle, MapPin, MoreVertical, AlertTriangle, QrCode, Download } from 'lucide-react'
+import { ArrowLeft, Plus, Trash2, Edit2, Check, X, Dumbbell, Users, TrendingUp, Settings, Bell, ChevronRight, Search, UserPlus, CreditCard, Star, Activity, Clock, Award, Calendar, Shield, DollarSign, Phone, MessageCircle, XCircle, MapPin, MoreVertical, AlertTriangle, QrCode, Download, UserCheck } from 'lucide-react'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Label } from './ui/label'
@@ -9,6 +9,8 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { MemberProfilePanel } from './admin/MemberProfilePanel'
 import { SharedSubscriptions } from './admin/SharedSubscriptions'
 import { CheckInQrScreen } from './CheckInQrScreen'
+import { CoachCheckIn } from './admin/CoachCheckIn'
+import { CoachAttendance } from './admin/CoachAttendance'
 import { getSubscriptionStatus, LOW_SESSIONS_THRESHOLD, EXPIRING_SOON_DAYS } from '../lib/gym'
 
 type AdminDashboardProps = {
@@ -16,6 +18,7 @@ type AdminDashboardProps = {
     id: string
     full_name: string
     email: string
+    role?: 'admin' | 'coach'
     session_token?: string
   }
   onLogout: () => void
@@ -352,7 +355,11 @@ const toDateInputValue = (date: Date) =>
 void operativeGhost
 
 export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
-  const [activeTab, setActiveTab] = useState<'overview' | 'classes' | 'newuser' | 'attendance' | 'payments' | 'members' | 'movements' | 'shared' | 'expiring' | 'settings' | 'qr'>(() => {
+  // Coaches only get the Classes tab (to mark athletes attended) plus their
+  // own check-in card; everything else is for full admins.
+  const isCoach = admin.role === 'coach'
+  const [activeTab, setActiveTab] = useState<'overview' | 'classes' | 'newuser' | 'attendance' | 'payments' | 'members' | 'movements' | 'shared' | 'expiring' | 'settings' | 'qr' | 'coaches'>(() => {
+    if (admin.role === 'coach') return 'classes'
     const saved = localStorage.getItem('adminActiveTab')
     return (saved as any) || 'overview'
   })
@@ -637,8 +644,12 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
 
   // Save activeTab to localStorage whenever it changes
   useEffect(() => {
+    if (isCoach && activeTab !== 'classes') {
+      setActiveTab('classes')
+      return
+    }
     localStorage.setItem('adminActiveTab', activeTab)
-  }, [activeTab])
+  }, [activeTab, isCoach])
 
   // Clear localStorage when component unmounts
   useEffect(() => {
@@ -1655,12 +1666,12 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
                 <Settings className="w-5 h-5 sm:w-6 sm:h-6 text-white animate-spin [animation-duration:3s]" />
               </div>
               <div>
-                <h2 className="font-cinzel font-bold text-sm sm:text-base">Admin Panel</h2>
+                <h2 className="font-cinzel font-bold text-sm sm:text-base">{isCoach ? 'Coach Panel' : 'Admin Panel'}</h2>
                 <p className="text-xs text-muted-foreground hidden sm:block">{admin.full_name}</p>
               </div>
             </div>
             <div className="flex items-center gap-2 sm:gap-3">
-              <button
+              {!isCoach && <button
                 onClick={() => setShowNotifications(!showNotifications)}
                 className="relative p-2 rounded-xl bg-secondary border border-t1-red/20"
               >
@@ -1670,7 +1681,7 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
                     {notifications.length}
                   </span>
                 )}
-              </button>
+              </button>}
               <Button
                 onClick={() => window.open('https://coach.tripleonebars.com/?lang=en', '_blank')}
                 variant="outline"
@@ -1708,6 +1719,12 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
       </div>
 
       <div className="max-w-4xl mx-auto px-4 sm:px-6 py-6 space-y-6">
+        <CoachCheckIn adminToken={admin.session_token} />
+
+        {activeTab === 'coaches' && !isCoach && (
+          <CoachAttendance adminToken={admin.session_token} />
+        )}
+
         {activeTab === 'overview' && (
           <>
             <h2 className="text-xl font-cinzel font-bold">Dashboard Overview</h2>
@@ -2350,7 +2367,7 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
                 if (showSessionDetail) {
                   setShowSessionDetail(false)
                   setSelectedSession(null)
-                } else {
+                } else if (!isCoach) {
                   setActiveTab('overview')
                 }
               }} className="p-2 rounded-xl bg-secondary border border-t1-red/20 hover:bg-t1-red/10 transition-colors">
@@ -2481,7 +2498,7 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
                   </div>
                   <div className="text-right space-y-1 text-xs text-muted-foreground">
                     <p>{getSessionStats(selectedSession).booked} booked • {getSessionStats(selectedSession).attended} attended</p>
-                    {selectedSession.status !== 'cancelled' && (
+                    {selectedSession.status !== 'cancelled' && !isCoach && (
                       <Button
                         onClick={() => handleCancelClass(selectedSession)}
                         size="sm"
@@ -3204,13 +3221,17 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
       <nav className="fixed bottom-0 left-0 right-0 bg-t1-black/95 backdrop-blur border-t border-t1-red/20 z-50 safe-area-inset-bottom">
           <div className="max-w-4xl mx-auto px-2 py-2 sm:py-3">
             <div className="flex justify-around items-center overflow-x-auto">
-              {[
-                { id: 'overview', icon: TrendingUp, label: 'Home' },
-                { id: 'classes', icon: Calendar, label: 'Classes' },
-                { id: 'qr', icon: QrCode, label: 'Check-in' },
-                { id: 'members', icon: Users, label: 'Members' },
-                { id: 'settings', icon: Settings, label: 'Settings' }
-              ].map((item) => (
+              {(isCoach
+                ? [{ id: 'classes', icon: Calendar, label: 'Classes' }]
+                : [
+                    { id: 'overview', icon: TrendingUp, label: 'Home' },
+                    { id: 'classes', icon: Calendar, label: 'Classes' },
+                    { id: 'qr', icon: QrCode, label: 'Check-in' },
+                    { id: 'members', icon: Users, label: 'Members' },
+                    { id: 'coaches', icon: UserCheck, label: 'Coaches' },
+                    { id: 'settings', icon: Settings, label: 'Settings' }
+                  ]
+              ).map((item) => (
                 <button
                   key={item.id}
                   onClick={() => setActiveTab(item.id as typeof activeTab)}

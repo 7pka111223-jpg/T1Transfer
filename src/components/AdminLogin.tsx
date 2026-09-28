@@ -9,6 +9,8 @@ export type AdminData = {
   id: string
   full_name: string
   email: string
+  // 'coach' accounts only see Classes and their own check-in.
+  role?: 'admin' | 'coach'
   // Proof of login, issued by the admin_login RPC.
   session_token?: string
 }

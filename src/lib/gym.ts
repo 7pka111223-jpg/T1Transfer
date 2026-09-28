@@ -133,3 +133,13 @@ export const getSubscriptionStatus = (
 
   return { isValid, isExpired, isExhausted, needsRenewal, renewalReason, daysUntilExpiry }
 }
+
+// "5:50 PM" for an instant, on the gym's clock.
+export const formatGymClock = (at: string | Date) =>
+  new Date(at).toLocaleTimeString('en-US', { timeZone: GYM_TIME_ZONE, hour: 'numeric', minute: '2-digit' })
+
+// "2026-10-06" for an instant's gym calendar day (plus `offsetDays`).
+export const gymDateString = (at: Date = new Date(), offsetDays = 0) => {
+  const shifted = new Date(at.getTime() + offsetDays * 24 * 60 * 60 * 1000)
+  return new Intl.DateTimeFormat('en-CA', { timeZone: GYM_TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit' }).format(shifted)
+}

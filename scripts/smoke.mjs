@@ -25,7 +25,29 @@ const MEMBER = {
   level: 'Warrior', profile_image_url: null, medical_notes: null, emergency_contact: null,
   loyalty_points: 0, branch_id: null,
 }
-const ADMIN = { id: '00000000-0000-4000-8000-000000000002', full_name: 'Smoke Admin', email: '' }
+const ADMIN = { id: '00000000-0000-4000-8000-000000000002', full_name: 'Smoke Admin', email: '', role: 'admin' }
+const COACH = { id: '00000000-0000-4000-8000-000000000003', full_name: 'Smoke Coach', email: '', role: 'coach' }
+const STAFF_SCHEDULE = [
+  { ...ADMIN, username: 'smoke-admin', schedule: { 2: '18:00' } },
+  { ...COACH, username: 'smoke-coach', schedule: { 1: '17:00', 3: '19:30' } },
+]
+// A report with every status the Coaches screen can show.
+const COACH_REPORT = ['present', 'override', 'missed', 'open', 'upcoming'].map((status, i) => ({
+  admin_id: COACH.id, full_name: COACH.full_name, gym_date: `2026-10-0${i + 1}`, session_time: '18:00', status,
+  checked_in_at: status === 'present' || status === 'override' ? '2026-10-01T14:20:00Z' : null,
+  distance_m: status === 'present' ? 120 : null, note: status === 'override' ? 'Traffic' : null,
+  override_by_name: status === 'override' ? ADMIN.full_name : null,
+}))
+// Window open at the pinned Tue 18:30 clock: session 19:00, check in 18:00-18:50.
+const COACH_TODAY_OPEN = {
+  scheduled: true, session_time: '19:00', session_at: '2026-10-06T16:00:00Z', opens_at: '2026-10-06T15:00:00Z',
+  closes_at: '2026-10-06T15:50:00Z', checked_in: false, checked_in_at: null, status: null,
+}
+// Coach checked in already today, so the card renders the same at any clock.
+const COACH_TODAY = {
+  scheduled: true, session_time: '18:00', session_at: '2026-10-06T15:00:00Z', opens_at: '2026-10-06T14:00:00Z',
+  closes_at: '2026-10-06T14:50:00Z', checked_in: true, checked_in_at: '2026-10-06T14:20:00Z', status: 'present',
+}
 
 // Gym-local (Cairo, UTC+3 in summer / UTC+2 in winter) moments the app must
 // survive. Dates in October 2026 are UTC+3; 2026-10-02 is a Friday.
@@ -50,6 +72,24 @@ const SCREENS = [
     storage: { t1_admin: { ...ADMIN, session_token: 'smoke-admin' }, t1_view: 'admin-dashboard' },
     expect: ADMIN.full_name, eachClock: true,
   },
+  {
+    name: 'admin coaches tab',
+    storage: { t1_admin: { ...ADMIN, session_token: 'smoke-admin' }, t1_view: 'admin-dashboard', adminActiveTab: 'coaches' },
+    expect: ['Coach attendance', 'Weekly session times', 'Marked present', 'Missed'],
+  },
+  {
+    name: 'coach dashboard',
+    storage: { t1_admin: { ...COACH, session_token: 'smoke-coach' }, t1_view: 'admin-dashboard', adminActiveTab: 'members' },
+    expect: ['Coach Panel', 'My attendance', 'Classes'], forbid: ['Members & Subscriptions', 'Coach attendance'], eachClock: true,
+  },
+  {
+    // Window open at Tue 18:30 (session 19:00): tap "Check in now" with the
+    // device placed at the gym.
+    name: 'coach check-in button',
+    storage: { t1_admin: { ...COACH, session_token: 'smoke-coach-open' }, t1_view: 'admin-dashboard' },
+    clock: 1, geo: { latitude: 30.0478, longitude: 31.4956, accuracy: 15 },
+    click: 'Check in now', expect: 'Checked in at',
+  },
 ]
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
@@ -63,7 +103,12 @@ const cors = {
   'Access-Control-Expose-Headers': 'Content-Range',
 }
 
-const mock = createServer((req, res) => {
+const mock = createServer(async (req, res) => {
+  let raw = ''
+  for await (const chunk of req) raw += chunk
+  let body = {}
+  try { body = raw ? JSON.parse(raw) : {} } catch {}
+
   const send = (status, body) => {
     res.writeHead(status, { ...cors, 'Content-Type': 'application/json', 'Content-Range': '*/0' })
     res.end(body === undefined ? '' : JSON.stringify(body))
@@ -74,7 +119,18 @@ const mock = createServer((req, res) => {
 
   const name = url.pathname.slice('/rest/v1/'.length)
   if (name === 'rpc/member_session') return send(200, MEMBER)
-  if (name === 'rpc/admin_session') return send(200, ADMIN)
+  if (name === 'rpc/admin_session') return send(200, body.p_token === 'smoke-coach' ? COACH : ADMIN)
+  if (name === 'rpc/coach_today') {
+    if (body.p_token === 'smoke-coach') return send(200, COACH_TODAY)
+    if (body.p_token === 'smoke-coach-open') return send(200, COACH_TODAY_OPEN)
+    return send(200, { scheduled: false })
+  }
+  if (name === 'rpc/coach_check_in') {
+    const atGym = Math.abs(body.p_lat - 30.047806) < 0.004 && Math.abs(body.p_lng - 31.495639) < 0.004
+    return send(200, atGym ? { ok: true, checked_in_at: '2026-10-06T15:30:00Z', distance_m: 12 } : { error: 'too_far', distance_m: 9999 })
+  }
+  if (name === 'rpc/coach_schedule_list') return send(200, body.p_token === 'smoke-admin' ? STAFF_SCHEDULE : { error: 'not_admin' })
+  if (name === 'rpc/coach_attendance_report') return send(200, body.p_token === 'smoke-admin' ? COACH_REPORT : { error: 'not_admin' })
   if (name.startsWith('rpc/')) return send(200, null)
   if (req.method === 'HEAD') return send(200)
   if (req.method !== 'GET') return send(201, [])
@@ -175,6 +231,10 @@ const openScreen = async (browser, appUrl, screen, clock) => {
     .join('')
   await browser.send('Runtime.evaluate', { expression: `localStorage.clear();${storage}` })
   browser.listeners.add(onEvent)
+  if (screen.geo) {
+    await browser.send('Browser.grantPermissions', { permissions: ['geolocation'], origin: new URL(appUrl).origin })
+    await browser.send('Emulation.setGeolocationOverride', screen.geo)
+  }
   await browser.send('Page.reload')
   await sleep(3500)
   if (screen.click) {
@@ -194,7 +254,14 @@ const openScreen = async (browser, appUrl, screen, clock) => {
   await browser.send('Page.removeScriptToEvaluateOnNewDocument', { identifier })
 
   if (!text.trim()) errors.push('blank screen (nothing rendered)')
-  else if (!text.includes(screen.expect)) errors.push(`expected to see "${screen.expect}" but did not`)
+  else {
+    for (const want of [].concat(screen.expect)) {
+      if (!text.includes(want)) errors.push(`expected to see "${want}" but did not`)
+    }
+    for (const unwanted of [].concat(screen.forbid ?? [])) {
+      if (text.includes(unwanted)) errors.push(`should not show "${unwanted}"`)
+    }
+  }
   return errors
 }
 
@@ -220,7 +287,7 @@ await browser.send('Page.enable')
 let failures = 0
 try {
   for (const screen of SCREENS) {
-    for (const clock of screen.eachClock ? CLOCKS : [CLOCKS[0]]) {
+    for (const clock of screen.eachClock ? CLOCKS : [CLOCKS[screen.clock ?? 0]]) {
       const errors = await openScreen(browser, appUrl, screen, clock)
       const label = `${screen.name} @ ${clock.label}`
       if (errors.length) {

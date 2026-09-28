@@ -162,7 +162,12 @@ export default function App() {
         return null
       }
     }
-    const validate = async (key: string, rpc: 'member_session' | 'admin_session', clear: () => void) => {
+    const validate = async (
+      key: string,
+      rpc: 'member_session' | 'admin_session',
+      clear: () => void,
+      refresh?: (fresh: any) => void,
+    ) => {
       if (!localStorage.getItem(key)) return
       const token = readToken(key)
       if (!token) {
@@ -176,6 +181,8 @@ export default function App() {
         if (!data) {
           localStorage.removeItem(key)
           if (!cancelled) clear()
+        } else if (!cancelled && refresh) {
+          refresh(data)
         }
       } catch {
         // Transport failure: keep the snapshot for retry on next open.
@@ -183,7 +190,9 @@ export default function App() {
     }
     const validateSessions = async () => {
       await validate('t1_member', 'member_session', () => setCurrentMember(null))
-      await validate('t1_admin', 'admin_session', () => setCurrentAdmin(null))
+      // Pick up role changes (e.g. admin -> coach) made since the last login.
+      await validate('t1_admin', 'admin_session', () => setCurrentAdmin(null),
+        (fresh) => setCurrentAdmin(prev => (prev ? { ...prev, ...fresh } : prev)))
       // The QR check-in flow owns the view while its payload is pending.
       if (cancelled || pendingCheckIn) return
       const m = localStorage.getItem('t1_member')
