@@ -90,6 +90,22 @@ const SCREENS = [
     clock: 1, geo: { latitude: 30.0478, longitude: 31.4956, accuracy: 15 },
     click: 'Check in now', expect: 'Checked in at',
   },
+  {
+    name: 'coach before check-in window',
+    storage: { t1_admin: { ...COACH, session_token: 'smoke-coach-open' }, t1_view: 'admin-dashboard' },
+    clock: 0, expect: 'Check-in opens at 6:00 PM', forbid: 'Check in now',
+  },
+  {
+    // Page left open from 17:59:45: the button must open by itself at 18:00.
+    name: 'coach button opens while waiting',
+    storage: { t1_admin: { ...COACH, session_token: 'smoke-coach-open' }, t1_view: 'admin-dashboard' },
+    at: { label: 'Tue 17:59:45, then wait', iso: '2026-10-06T14:59:45Z' }, waitMs: 20000, expect: 'Check in now',
+  },
+  {
+    name: 'coach with no session today',
+    storage: { t1_admin: { ...COACH, session_token: 'smoke-coach-off' }, t1_view: 'admin-dashboard' },
+    expect: ['Coach Panel', 'No session for you today'],
+  },
 ]
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
@@ -119,7 +135,7 @@ const mock = createServer(async (req, res) => {
 
   const name = url.pathname.slice('/rest/v1/'.length)
   if (name === 'rpc/member_session') return send(200, MEMBER)
-  if (name === 'rpc/admin_session') return send(200, body.p_token === 'smoke-coach' ? COACH : ADMIN)
+  if (name === 'rpc/admin_session') return send(200, String(body.p_token).startsWith('smoke-coach') ? COACH : ADMIN)
   if (name === 'rpc/coach_today') {
     if (body.p_token === 'smoke-coach') return send(200, COACH_TODAY)
     if (body.p_token === 'smoke-coach-open') return send(200, COACH_TODAY_OPEN)
@@ -236,7 +252,7 @@ const openScreen = async (browser, appUrl, screen, clock) => {
     await browser.send('Emulation.setGeolocationOverride', screen.geo)
   }
   await browser.send('Page.reload')
-  await sleep(3500)
+  await sleep(3500 + (screen.waitMs ?? 0))
   if (screen.click) {
     await browser.send('Runtime.evaluate', {
       expression: `[...document.querySelectorAll('button')].find(b => b.innerText.includes(${JSON.stringify(screen.click)}))?.click()`,
@@ -287,7 +303,7 @@ await browser.send('Page.enable')
 let failures = 0
 try {
   for (const screen of SCREENS) {
-    for (const clock of screen.eachClock ? CLOCKS : [CLOCKS[screen.clock ?? 0]]) {
+    for (const clock of screen.eachClock ? CLOCKS : [screen.at ?? CLOCKS[screen.clock ?? 0]]) {
       const errors = await openScreen(browser, appUrl, screen, clock)
       const label = `${screen.name} @ ${clock.label}`
       if (errors.length) {

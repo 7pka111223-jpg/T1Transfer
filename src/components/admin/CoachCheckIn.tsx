@@ -64,10 +64,18 @@ const getPosition = () =>
     })
   })
 
-export function CoachCheckIn({ adminToken }: { adminToken?: string }) {
+// Coaches always see the card (so they know where check-in lives); admins
+// only on days they have a session.
+export function CoachCheckIn({ adminToken, alwaysShow = false }: { adminToken?: string; alwaysShow?: boolean }) {
   const [today, setToday] = useState<Today | null>(null)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<{ kind: 'error' | 'success'; text: string } | null>(null)
+  // Re-render as time passes so the button opens and closes on its own.
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 15000)
+    return () => clearInterval(timer)
+  }, [])
 
   const load = useCallback(async () => {
     if (!adminToken) return
@@ -77,7 +85,16 @@ export function CoachCheckIn({ adminToken }: { adminToken?: string }) {
 
   useEffect(() => { load() }, [load])
 
-  if (!today || !today.scheduled) return null
+  if (!today) return null
+  if (!today.scheduled) {
+    if (!alwaysShow) return null
+    return (
+      <div className="bg-secondary rounded-2xl p-5 border border-t1-red/10">
+        <h3 className="font-cinzel font-semibold">My attendance</h3>
+        <p className="text-sm text-muted-foreground mt-1">No session for you today, so there's nothing to check in for.</p>
+      </div>
+    )
+  }
 
   const handleCheckIn = async () => {
     setBusy(true)
@@ -114,7 +131,6 @@ export function CoachCheckIn({ adminToken }: { adminToken?: string }) {
     }
   }
 
-  const now = Date.now()
   const opens = new Date(today.opens_at).getTime()
   const closes = new Date(today.closes_at).getTime()
   const windowState = today.checked_in ? 'done' : now < opens ? 'early' : now > closes ? 'closed' : 'open'
@@ -141,19 +157,25 @@ export function CoachCheckIn({ adminToken }: { adminToken?: string }) {
         <p className="text-sm text-muted-foreground">Recorded at {formatGymClock(today.checked_in_at)}.</p>
       )}
 
-      {windowState === 'open' && (
+      {windowState !== 'done' && (
         <Button
           onClick={handleCheckIn}
-          disabled={busy}
-          className="w-full h-12 bg-gradient-t1 text-white rounded-xl font-cinzel flex items-center justify-center gap-2"
+          disabled={busy || windowState !== 'open'}
+          className="w-full h-12 bg-gradient-t1 text-white rounded-xl font-cinzel flex items-center justify-center gap-2 disabled:opacity-40"
         >
           {busy ? <Loader2 className="w-5 h-5 animate-spin" /> : <MapPin className="w-5 h-5" />}
-          {busy ? 'Getting your location…' : 'Check in now'}
+          {busy
+            ? 'Getting your location…'
+            : windowState === 'open'
+              ? 'Check in now'
+              : windowState === 'early'
+                ? `Check-in opens at ${formatGymClock(today.opens_at)}`
+                : 'Check-in closed'}
         </Button>
       )}
 
       {windowState === 'early' && (
-        <p className="text-sm text-muted-foreground">Check-in opens at {formatGymClock(today.opens_at)}. You'll need to be within 500 m of the gym.</p>
+        <p className="text-sm text-muted-foreground">You'll need to be within 500 m of the gym when you tap it.</p>
       )}
 
       {windowState === 'closed' && (

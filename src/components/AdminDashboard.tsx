@@ -1719,7 +1719,7 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
       </div>
 
       <div className="max-w-4xl mx-auto px-4 sm:px-6 py-6 space-y-6">
-        <CoachCheckIn adminToken={admin.session_token} />
+        <CoachCheckIn adminToken={admin.session_token} alwaysShow={isCoach} />
 
         {activeTab === 'coaches' && !isCoach && (
           <CoachAttendance adminToken={admin.session_token} />
