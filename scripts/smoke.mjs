@@ -75,7 +75,7 @@ const SCREENS = [
   {
     name: 'admin coaches tab',
     storage: { t1_admin: { ...ADMIN, session_token: 'smoke-admin' }, t1_view: 'admin-dashboard', adminActiveTab: 'coaches' },
-    expect: ['Coach attendance', 'Weekly session times', 'Marked present', 'Missed'],
+    expect: ['Coach attendance', 'Weekly session times', 'Marked present', 'Missed', 'N/A'],
   },
   {
     name: 'coach dashboard',

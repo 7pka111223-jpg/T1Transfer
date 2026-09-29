@@ -57,6 +57,8 @@ export function CoachAttendance({ adminToken }: { adminToken?: string }) {
   const [overrideFor, setOverrideFor] = useState<string | null>(null)
   const [overrideNote, setOverrideNote] = useState('')
   const [savingCell, setSavingCell] = useState<string | null>(null)
+  // An N/A day being given a time (shows the time picker instead of "N/A").
+  const [assigningCell, setAssigningCell] = useState<string | null>(null)
 
   const to = gymDateString(new Date(), -7 * weekOffset)
   const from = gymDateString(new Date(), -7 * weekOffset - 6)
@@ -194,7 +196,7 @@ export function CoachAttendance({ adminToken }: { adminToken?: string }) {
         <div>
           <h3 className="font-cinzel font-semibold">Weekly session times</h3>
           <p className="text-xs text-muted-foreground mt-1">
-            Check-in opens 1 hour before the session and closes 10 minutes before it. Leave a day empty if they have no session.
+            Check-in opens 1 hour before the session and closes 10 minutes before it. N/A means no session that day: no check-in and nothing marked missed.
           </p>
         </div>
         {!staff && <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />}
@@ -207,20 +209,50 @@ export function CoachAttendance({ adminToken }: { adminToken?: string }) {
             <div className="grid grid-cols-4 sm:grid-cols-7 gap-2">
               {WEEKDAYS.map((label, weekday) => {
                 const key = `${person.id}-${weekday}`
+                const time = person.schedule[String(weekday)]
+                const assigned = Boolean(time) || assigningCell === key
                 return (
-                  <label key={key} className="space-y-1">
-                    <span className="text-[11px] text-muted-foreground flex items-center gap-1">
-                      {label}
-                      {savingCell === key && <Loader2 className="w-3 h-3 animate-spin" />}
+                  <div key={key} className="space-y-1">
+                    <span className="text-[11px] text-muted-foreground flex items-center justify-between gap-1">
+                      <span className="flex items-center gap-1">
+                        {label}
+                        {savingCell === key && <Loader2 className="w-3 h-3 animate-spin" />}
+                      </span>
+                      {time && (
+                        <button
+                          onClick={() => saveTime(person, weekday, '')}
+                          disabled={savingCell === key}
+                          className="text-muted-foreground hover:text-t1-red"
+                          aria-label={`Set ${label} to not assigned`}
+                          title="Set to N/A"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                     </span>
-                    <input
-                      type="time"
-                      defaultValue={person.schedule[String(weekday)] ?? ''}
-                      key={`${key}-${person.schedule[String(weekday)] ?? ''}`}
-                      onBlur={(e) => saveTime(person, weekday, e.target.value)}
-                      className="w-full h-9 px-2 rounded-lg bg-t1-black border border-t1-red/20 text-t1-cream text-sm"
-                    />
-                  </label>
+                    {assigned ? (
+                      <input
+                        type="time"
+                        autoFocus={!time}
+                        defaultValue={time ?? ''}
+                        key={`${key}-${time ?? ''}`}
+                        onBlur={async (e) => {
+                          const value = e.target.value
+                          if (value) await saveTime(person, weekday, value)
+                          setAssigningCell(null)
+                        }}
+                        className="w-full h-9 px-2 rounded-lg bg-t1-black border border-t1-red/20 text-t1-cream text-sm"
+                      />
+                    ) : (
+                      <button
+                        onClick={() => setAssigningCell(key)}
+                        className="w-full h-9 rounded-lg border border-dashed border-white/15 text-muted-foreground text-xs hover:border-t1-red/40 hover:text-t1-cream"
+                        title="Not assigned. Tap to set a session time."
+                      >
+                        N/A
+                      </button>
+                    )}
+                  </div>
                 )
               })}
             </div>
