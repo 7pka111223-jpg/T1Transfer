@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { ChevronLeft, ChevronRight, Check, X, Loader2 } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Check, X, Loader2, Download } from 'lucide-react'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 import { supabase } from '../../lib/supabase'
@@ -48,6 +48,56 @@ const formatSessionTime = (hhmm: string | null) => {
   return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`
 }
 
+const csvCell = (value: unknown) => {
+  const text = value === null || value === undefined ? '' : String(value)
+  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
+}
+
+const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+
+// One CSV with two tables: every successful check-in in the period, then
+// per-person totals (scheduled / attended / missed days).
+const buildAttendanceCsv = (rows: ReportRow[], roles: Record<string, string>, from: string, to: string) => {
+  const lines: unknown[][] = [
+    [`Coach attendance ${from} to ${to}`],
+    [],
+    ['Check-ins'],
+    ['Date', 'Weekday', 'Staff', 'Role', 'Session time', 'Checked in at', 'Recorded by', 'Distance from gym (m)', 'Note'],
+  ]
+  const attended = rows
+    .filter(r => r.status === 'present' || r.status === 'override')
+    .sort((a, b) => a.gym_date.localeCompare(b.gym_date) || a.full_name.localeCompare(b.full_name))
+  for (const r of attended) {
+    lines.push([
+      r.gym_date,
+      WEEKDAY_NAMES[new Date(`${r.gym_date}T12:00:00Z`).getUTCDay()],
+      r.full_name,
+      roles[r.admin_id] ?? '',
+      formatSessionTime(r.session_time),
+      r.checked_in_at ? formatGymClock(r.checked_in_at) : '',
+      r.status === 'present' ? 'Self (location check-in)' : `Marked present by ${r.override_by_name ?? 'an admin'}`,
+      r.distance_m ?? '',
+      r.note ?? '',
+    ])
+  }
+  if (attended.length === 0) lines.push(['No check-ins in this period'])
+
+  lines.push([], ['Totals'], ['Staff', 'Role', 'Scheduled days', 'Attended days', 'Missed days'])
+  const totals = new Map<string, { name: string; scheduled: number; attended: number; missed: number }>()
+  for (const r of rows) {
+    const t = totals.get(r.admin_id) ?? { name: r.full_name, scheduled: 0, attended: 0, missed: 0 }
+    t.scheduled += 1
+    if (r.status === 'present' || r.status === 'override') t.attended += 1
+    if (r.status === 'missed') t.missed += 1
+    totals.set(r.admin_id, t)
+  }
+  for (const [id, t] of [...totals].sort((a, b) => a[1].name.localeCompare(b[1].name))) {
+    lines.push([t.name, roles[id] ?? '', t.scheduled, t.attended, t.missed])
+  }
+
+  return lines.map(line => line.map(csvCell).join(',')).join('\r\n')
+}
+
 export function CoachAttendance({ adminToken }: { adminToken?: string }) {
   // Week shown = the 7 gym days ending `weekOffset` weeks before today.
   const [weekOffset, setWeekOffset] = useState(0)
@@ -57,6 +107,10 @@ export function CoachAttendance({ adminToken }: { adminToken?: string }) {
   const [overrideFor, setOverrideFor] = useState<string | null>(null)
   const [overrideNote, setOverrideNote] = useState('')
   const [savingCell, setSavingCell] = useState<string | null>(null)
+  const [exportFrom, setExportFrom] = useState(() => `${gymDateString().slice(0, 8)}01`)
+  const [exportTo, setExportTo] = useState(() => gymDateString())
+  const [exporting, setExporting] = useState(false)
+  const [exportMessage, setExportMessage] = useState('')
   // An N/A day being given a time (shows the time picker instead of "N/A").
   const [assigningCell, setAssigningCell] = useState<string | null>(null)
 
@@ -108,6 +162,38 @@ export function CoachAttendance({ adminToken }: { adminToken?: string }) {
     }
     await loadStaff()
     loadReport()
+  }
+
+  const exportCsv = async () => {
+    setExportMessage('')
+    if (!exportFrom || !exportTo || exportTo < exportFrom) {
+      setExportMessage('Pick a From date on or before the To date.')
+      return
+    }
+    setExporting(true)
+    try {
+      const { data, error } = await supabase.rpc('coach_attendance_report', { p_token: adminToken, p_from: exportFrom, p_to: exportTo })
+      if (error || !Array.isArray(data)) {
+        setExportMessage(data?.error === 'invalid_range' ? 'The period can be at most one year.' : 'Could not export attendance.')
+        return
+      }
+      const roles = Object.fromEntries((staff ?? []).map(p => [p.id, p.role]))
+      const csv = buildAttendanceCsv(data, roles, exportFrom, exportTo)
+      // BOM so Excel reads the file as UTF-8
+      const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `coach_attendance_${exportFrom}_to_${exportTo}.csv`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
+      const checkIns = data.filter((r: ReportRow) => r.status === 'present' || r.status === 'override').length
+      setExportMessage(`Exported ${checkIns} check-in${checkIns === 1 ? '' : 's'}.`)
+    } finally {
+      setExporting(false)
+    }
   }
 
   if (error) return <p className="text-t1-red text-sm">{error}</p>
@@ -190,6 +276,33 @@ export function CoachAttendance({ adminToken }: { adminToken?: string }) {
             })}
           </div>
         ))}
+      </div>
+
+      <div className="bg-secondary rounded-2xl p-5 border border-t1-red/10 space-y-4">
+        <div>
+          <h3 className="font-cinzel font-semibold">Export attendance</h3>
+          <p className="text-xs text-muted-foreground mt-1">
+            CSV with every successful check-in in the period (who, when, recorded by) and each person's attended days.
+          </p>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <label className="space-y-1">
+            <span className="text-xs text-muted-foreground">From</span>
+            <Input type="date" value={exportFrom} onChange={(e) => setExportFrom(e.target.value)}
+              className="h-10 bg-t1-black border-t1-red/20 text-t1-cream rounded-xl" />
+          </label>
+          <label className="space-y-1">
+            <span className="text-xs text-muted-foreground">To</span>
+            <Input type="date" value={exportTo} onChange={(e) => setExportTo(e.target.value)}
+              className="h-10 bg-t1-black border-t1-red/20 text-t1-cream rounded-xl" />
+          </label>
+        </div>
+        <Button onClick={exportCsv} disabled={exporting}
+          className="w-full h-11 bg-gradient-t1 text-white rounded-xl flex items-center justify-center gap-2">
+          {exporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+          {exporting ? 'Exporting…' : 'Export CSV'}
+        </Button>
+        {exportMessage && <p className="text-xs text-muted-foreground">{exportMessage}</p>}
       </div>
 
       <div className="bg-secondary rounded-2xl p-5 border border-t1-red/10 space-y-4">

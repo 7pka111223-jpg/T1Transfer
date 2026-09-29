@@ -9,7 +9,7 @@
 // use a specific browser. Touches no real data: the fake Supabase below
 // answers every request locally.
 import { spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -76,6 +76,16 @@ const SCREENS = [
     name: 'admin coaches tab',
     storage: { t1_admin: { ...ADMIN, session_token: 'smoke-admin' }, t1_view: 'admin-dashboard', adminActiveTab: 'coaches' },
     expect: ['Coach attendance', 'Weekly session times', 'Marked present', 'Missed', 'N/A'],
+  },
+  {
+    name: 'coach attendance CSV export',
+    storage: { t1_admin: { ...ADMIN, session_token: 'smoke-admin' }, t1_view: 'admin-dashboard', adminActiveTab: 'coaches' },
+    click: 'Export CSV', expect: 'Exported 2 check-ins',
+    download: [
+      'Check-ins', 'Date,Weekday,Staff,Role,Session time,Checked in at,Recorded by',
+      'Self (location check-in)', `Marked present by ${ADMIN.full_name}`, 'Traffic',
+      'Totals', 'Staff,Role,Scheduled days,Attended days,Missed days', `${COACH.full_name},coach,5,2,1`,
+    ],
   },
   {
     name: 'coach dashboard',
@@ -247,6 +257,11 @@ const openScreen = async (browser, appUrl, screen, clock) => {
     .join('')
   await browser.send('Runtime.evaluate', { expression: `localStorage.clear();${storage}` })
   browser.listeners.add(onEvent)
+  let downloadDir = null
+  if (screen.download) {
+    downloadDir = mkdtempSync(path.join(tmpdir(), 't1-smoke-dl-'))
+    await browser.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: downloadDir })
+  }
   if (screen.geo) {
     await browser.send('Browser.grantPermissions', { permissions: ['geolocation'], origin: new URL(appUrl).origin })
     await browser.send('Emulation.setGeolocationOverride', screen.geo)
@@ -268,6 +283,18 @@ const openScreen = async (browser, appUrl, screen, clock) => {
   // Leave nothing behind for the next screen's first load.
   await browser.send('Runtime.evaluate', { expression: 'localStorage.clear()' })
   await browser.send('Page.removeScriptToEvaluateOnNewDocument', { identifier })
+
+  if (downloadDir) {
+    const files = readdirSync(downloadDir).filter(f => !f.endsWith('.crdownload'))
+    if (files.length !== 1) errors.push(`expected one downloaded file, got ${files.length}`)
+    else {
+      const csv = readFileSync(path.join(downloadDir, files[0]), 'utf8')
+      for (const want of screen.download) {
+        if (!csv.includes(want)) errors.push(`download ${files[0]} is missing "${want}"`)
+      }
+    }
+    rmSync(downloadDir, { recursive: true, force: true })
+  }
 
   if (!text.trim()) errors.push('blank screen (nothing rendered)')
   else {
