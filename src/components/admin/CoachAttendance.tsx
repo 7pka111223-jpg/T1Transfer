@@ -309,7 +309,7 @@ export function CoachAttendance({ adminToken }: { adminToken?: string }) {
         <div>
           <h3 className="font-cinzel font-semibold">Weekly session times</h3>
           <p className="text-xs text-muted-foreground mt-1">
-            Check-in opens 1 hour before the session and closes 10 minutes before it. N/A means no session that day: no check-in and nothing marked missed.
+            Check-in opens 1 hour before the session and closes 5 minutes before it. N/A means no session that day: no check-in and nothing marked missed.
           </p>
         </div>
         {!staff && <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />}

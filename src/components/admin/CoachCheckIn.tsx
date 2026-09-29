@@ -5,7 +5,7 @@ import { supabase } from '../../lib/supabase'
 import { formatGymClock } from '../../lib/gym'
 
 // Staff check-in for today's session. The database decides everything
-// (schedule, 60-to-10-minute window, 500 m radius, one per day); this card
+// (schedule, 60-to-5-minute window, 500 m radius, one per day); this card
 // only asks for the device location and explains the answer.
 
 type Today =
@@ -36,7 +36,7 @@ const refusalMessage = (r: CheckInResult): string => {
     case 'not_scheduled': return "You don't have a session today, so there's nothing to check in for."
     case 'already_checked_in': return 'You already checked in today.'
     case 'too_early': return `Check-in opens at ${formatGymClock(r.opens_at!)} (1 hour before your session).`
-    case 'too_late': return `Check-in closed at ${formatGymClock(r.closes_at!)} (10 minutes before your session). Ask an admin to mark you present.`
+    case 'too_late': return `Check-in closed at ${formatGymClock(r.closes_at!)} (5 minutes before your session). Ask an admin to mark you present.`
     case 'location_required': return 'We need your location to check you in.'
     case 'location_imprecise': return `Your location is too rough (±${r.accuracy_m} m). Turn on precise location and try again.`
     case 'too_far': return `You're ${r.distance_m} m from the gym. You need to be within 500 m to check in.`
