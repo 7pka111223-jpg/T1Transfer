@@ -17,6 +17,7 @@ type ReportRow = {
   status: 'present' | 'override' | 'missed' | 'open' | 'upcoming'
   checked_in_at: string | null
   distance_m: number | null
+  location: string | null
   note: string | null
   override_by_name: string | null
 }
@@ -62,7 +63,7 @@ const buildAttendanceCsv = (rows: ReportRow[], roles: Record<string, string>, fr
     [`Coach attendance ${from} to ${to}`],
     [],
     ['Check-ins'],
-    ['Date', 'Weekday', 'Staff', 'Role', 'Session time', 'Checked in at', 'Recorded by', 'Distance from gym (m)', 'Note'],
+    ['Date', 'Weekday', 'Staff', 'Role', 'Session time', 'Checked in at', 'Location', 'Recorded by', 'Distance from branch (m)', 'Note'],
   ]
   const attended = rows
     .filter(r => r.status === 'present' || r.status === 'override')
@@ -75,6 +76,7 @@ const buildAttendanceCsv = (rows: ReportRow[], roles: Record<string, string>, fr
       roles[r.admin_id] ?? '',
       formatSessionTime(r.session_time),
       r.checked_in_at ? formatGymClock(r.checked_in_at) : '',
+      r.location ?? '',
       r.status === 'present' ? 'Self (location check-in)' : `Marked present by ${r.override_by_name ?? 'an admin'}`,
       r.distance_m ?? '',
       r.note ?? '',
@@ -236,7 +238,8 @@ export function CoachAttendance({ adminToken }: { adminToken?: string }) {
                       <p className="text-xs text-muted-foreground">
                         Session {formatSessionTime(row.session_time)}
                         {row.checked_in_at && ` · at ${formatGymClock(row.checked_in_at)}`}
-                        {row.distance_m !== null && ` · ${row.distance_m} m away`}
+                        {row.location && ` · ${row.location}`}
+                        {row.distance_m !== null && ` (${row.distance_m} m away)`}
                       </p>
                       {row.note && (
                         <p className="text-xs text-muted-foreground mt-1">

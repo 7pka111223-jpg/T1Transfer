@@ -35,18 +35,19 @@ const STAFF_SCHEDULE = [
 const COACH_REPORT = ['present', 'override', 'missed', 'open', 'upcoming'].map((status, i) => ({
   admin_id: COACH.id, full_name: COACH.full_name, gym_date: `2026-10-0${i + 1}`, session_time: '18:00', status,
   checked_in_at: status === 'present' || status === 'override' ? '2026-10-01T14:20:00Z' : null,
-  distance_m: status === 'present' ? 120 : null, note: status === 'override' ? 'Traffic' : null,
+  distance_m: status === 'present' ? 120 : null, location: status === 'present' ? 'CFC' : null, note: status === 'override' ? 'Traffic' : null,
   override_by_name: status === 'override' ? ADMIN.full_name : null,
 }))
 // Window open at the pinned Tue 18:30 clock: session 19:00, check in 18:00-18:50.
 const COACH_TODAY_OPEN = {
   scheduled: true, session_time: '19:00', session_at: '2026-10-06T16:00:00Z', opens_at: '2026-10-06T15:00:00Z',
-  closes_at: '2026-10-06T15:50:00Z', checked_in: false, checked_in_at: null, status: null,
+  closes_at: '2026-10-06T15:50:00Z', checked_in: false, checked_in_at: null, status: null, location: null,
 }
 // Coach checked in already today, so the card renders the same at any clock.
 const COACH_TODAY = {
   scheduled: true, session_time: '18:00', session_at: '2026-10-06T15:00:00Z', opens_at: '2026-10-06T14:00:00Z',
   closes_at: '2026-10-06T14:50:00Z', checked_in: true, checked_in_at: '2026-10-06T14:20:00Z', status: 'present',
+  location: 'CFC',
 }
 
 // Gym-local (Cairo, UTC+3 in summer / UTC+2 in winter) moments the app must
@@ -75,22 +76,22 @@ const SCREENS = [
   {
     name: 'admin coaches tab',
     storage: { t1_admin: { ...ADMIN, session_token: 'smoke-admin' }, t1_view: 'admin-dashboard', adminActiveTab: 'coaches' },
-    expect: ['Coach attendance', 'Weekly session times', 'Marked present', 'Missed', 'N/A'],
+    expect: ['Coach attendance', 'Weekly session times', 'Marked present', 'Missed', 'N/A', 'CFC (120 m away)'],
   },
   {
     name: 'coach attendance CSV export',
     storage: { t1_admin: { ...ADMIN, session_token: 'smoke-admin' }, t1_view: 'admin-dashboard', adminActiveTab: 'coaches' },
     click: 'Export CSV', expect: 'Exported 2 check-ins',
     download: [
-      'Check-ins', 'Date,Weekday,Staff,Role,Session time,Checked in at,Recorded by',
-      'Self (location check-in)', `Marked present by ${ADMIN.full_name}`, 'Traffic',
+      'Check-ins', 'Date,Weekday,Staff,Role,Session time,Checked in at,Location,Recorded by,Distance from branch (m)',
+      ',CFC,Self (location check-in),120,', `Marked present by ${ADMIN.full_name}`, 'Traffic',
       'Totals', 'Staff,Role,Scheduled days,Attended days,Missed days', `${COACH.full_name},coach,5,2,1`,
     ],
   },
   {
     name: 'coach dashboard',
     storage: { t1_admin: { ...COACH, session_token: 'smoke-coach' }, t1_view: 'admin-dashboard', adminActiveTab: 'members' },
-    expect: ['Coach Panel', 'My attendance', 'Classes'], forbid: ['Members & Subscriptions', 'Coach attendance'], eachClock: true,
+    expect: ['Coach Panel', 'My attendance', 'Classes', 'at CFC'], forbid: ['Members & Subscriptions', 'Coach attendance'], eachClock: true,
   },
   {
     // Window open at Tue 18:30 (session 19:00): tap "Check in now" with the
@@ -98,7 +99,7 @@ const SCREENS = [
     name: 'coach check-in button',
     storage: { t1_admin: { ...COACH, session_token: 'smoke-coach-open' }, t1_view: 'admin-dashboard' },
     clock: 1, geo: { latitude: 30.0478, longitude: 31.4956, accuracy: 15 },
-    click: 'Check in now', expect: 'Checked in at',
+    click: 'Check in now', expect: 'at 1st Settlement (12 m away)',
   },
   {
     name: 'coach before check-in window',
@@ -153,7 +154,8 @@ const mock = createServer(async (req, res) => {
   }
   if (name === 'rpc/coach_check_in') {
     const atGym = Math.abs(body.p_lat - 30.047806) < 0.004 && Math.abs(body.p_lng - 31.495639) < 0.004
-    return send(200, atGym ? { ok: true, checked_in_at: '2026-10-06T15:30:00Z', distance_m: 12 } : { error: 'too_far', distance_m: 9999 })
+    return send(200, atGym ? { ok: true, checked_in_at: '2026-10-06T15:30:00Z', distance_m: 12, location: '1st Settlement' }
+      : { error: 'too_far', distance_m: 9999, location: 'CFC', radius_m: 500 })
   }
   if (name === 'rpc/coach_schedule_list') return send(200, body.p_token === 'smoke-admin' ? STAFF_SCHEDULE : { error: 'not_admin' })
   if (name === 'rpc/coach_attendance_report') return send(200, body.p_token === 'smoke-admin' ? COACH_REPORT : { error: 'not_admin' })

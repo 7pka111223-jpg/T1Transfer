@@ -5,8 +5,8 @@ import { supabase } from '../../lib/supabase'
 import { formatGymClock } from '../../lib/gym'
 
 // Staff check-in for today's session. The database decides everything
-// (schedule, 60-to-5-minute window, 500 m radius, one per day); this card
-// only asks for the device location and explains the answer.
+// (schedule, 60-to-5-minute window, within 500 m of a branch, one per day);
+// this card only asks for the device location and explains the answer.
 
 type Today =
   | { scheduled: false }
@@ -19,6 +19,7 @@ type Today =
       checked_in: boolean
       checked_in_at: string | null
       status: 'present' | 'override' | null
+      location: string | null
     }
 
 type CheckInResult = {
@@ -29,6 +30,7 @@ type CheckInResult = {
   distance_m?: number
   accuracy_m?: number
   checked_in_at?: string
+  location?: string
 }
 
 const refusalMessage = (r: CheckInResult): string => {
@@ -39,7 +41,8 @@ const refusalMessage = (r: CheckInResult): string => {
     case 'too_late': return `Check-in closed at ${formatGymClock(r.closes_at!)} (5 minutes before your session). Ask an admin to mark you present.`
     case 'location_required': return 'We need your location to check you in.'
     case 'location_imprecise': return `Your location is too rough (±${r.accuracy_m} m). Turn on precise location and try again.`
-    case 'too_far': return `You're ${r.distance_m} m from the gym. You need to be within 500 m to check in.`
+    case 'too_far': return `You're ${r.distance_m} m from the nearest branch (${r.location}). You need to be within 500 m of a branch to check in.`
+    case 'no_locations': return 'No check-in locations are set up. Ask an admin.'
     case 'not_signed_in': return 'Your session expired. Log out and log in again.'
     default: return 'Check-in failed. Please try again.'
   }
@@ -118,7 +121,7 @@ export function CoachCheckIn({ adminToken, alwaysShow = false }: { adminToken?: 
       if (error || !data) throw error ?? new Error('No response')
 
       if (data.ok) {
-        setMessage({ kind: 'success', text: `Checked in at ${formatGymClock(data.checked_in_at)} (${data.distance_m} m from the gym).` })
+        setMessage({ kind: 'success', text: `Checked in at ${formatGymClock(data.checked_in_at)} at ${data.location} (${data.distance_m} m away).` })
       } else {
         setMessage({ kind: 'error', text: refusalMessage(data) })
       }
@@ -154,7 +157,9 @@ export function CoachCheckIn({ adminToken, alwaysShow = false }: { adminToken?: 
       </div>
 
       {windowState === 'done' && today.checked_in_at && (
-        <p className="text-sm text-muted-foreground">Recorded at {formatGymClock(today.checked_in_at)}.</p>
+        <p className="text-sm text-muted-foreground">
+          Recorded at {formatGymClock(today.checked_in_at)}{today.location && ` at ${today.location}`}.
+        </p>
       )}
 
       {windowState !== 'done' && (
@@ -175,7 +180,7 @@ export function CoachCheckIn({ adminToken, alwaysShow = false }: { adminToken?: 
       )}
 
       {windowState === 'early' && (
-        <p className="text-sm text-muted-foreground">You'll need to be within 500 m of the gym when you tap it.</p>
+        <p className="text-sm text-muted-foreground">You'll need to be within 500 m of a gym branch when you tap it.</p>
       )}
 
       {windowState === 'closed' && (
