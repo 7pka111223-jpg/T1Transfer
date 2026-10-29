@@ -4,6 +4,7 @@ import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Label } from './ui/label'
 import { supabase } from '../lib/supabase'
+import { GYM_TIME_ZONE, gymDateString } from '../lib/gym'
 
 type AssessmentBookingProps = {
   onBack: () => void
@@ -18,29 +19,54 @@ type BranchData = {
 
 const AVAILABLE_TIMES = ['19:00','20:00','21:00']
 
-function getAvailableDates(): Date[] {
-  const dates: Date[] = []
-  const today = new Date()
-  
-  let i = 1
-  while (dates.length < 6) {
-    const date = new Date(today)
-    date.setDate(today.getDate() + i)
-    const day = date.getDay()
-    if (day === 0 || day === 2 || day === 3 || day === 6) {
-      dates.push(date)
-    }
-    i++
+const CLOSED_WEEKDAY = 5 // Friday (0 = Sunday)
+
+// Days are gym calendar days ("2026-10-31"). Noon UTC on that date stands in
+// for the day itself, so weekday and display never shift with the device's
+// time zone.
+const dayAsDate = (day: string) => new Date(`${day}T12:00:00Z`)
+
+const addDays = (day: string, n: number) => {
+  const date = dayAsDate(day)
+  date.setUTCDate(date.getUTCDate() + n)
+  return date.toISOString().slice(0, 10)
+}
+
+// Minutes since midnight on the gym's clock.
+const gymMinutesNow = () => {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: GYM_TIME_ZONE, hour: 'numeric', minute: 'numeric', hourCycle: 'h23',
+  }).formatToParts(new Date())
+  const part = (type: string) => Number(parts.find(p => p.type === type)?.value)
+  return part('hour') * 60 + part('minute')
+}
+
+// Today's slots that haven't started yet; every slot on later days.
+function getAvailableTimes(day: string): string[] {
+  if (day !== gymDateString()) return AVAILABLE_TIMES
+  const now = gymMinutesNow()
+  return AVAILABLE_TIMES.filter(time => {
+    const [h, m] = time.split(':').map(Number)
+    return h * 60 + m > now
+  })
+}
+
+// From today to the same weekday next week, both included (Sat 10th shows
+// Sat 10th - Sat 17th), skipping Fridays when the gym is closed. Once today's
+// last slot has started, the week starts from tomorrow instead.
+function getAvailableDates(): string[] {
+  const today = gymDateString()
+  const first = getAvailableTimes(today).length > 0 ? today : addDays(today, 1)
+  const dates: string[] = []
+  for (let i = 0; i <= 7; i++) {
+    const day = addDays(first, i)
+    if (dayAsDate(day).getUTCDay() !== CLOSED_WEEKDAY) dates.push(day)
   }
   return dates
 }
 
-function formatDate(date: Date): string {
-  return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
-}
-
-function formatDateForDb(date: Date): string {
-  return date.toISOString().split('T')[0]
+function formatDate(day: string, options: Intl.DateTimeFormatOptions = { weekday: 'short', month: 'short', day: 'numeric' }): string {
+  return dayAsDate(day).toLocaleDateString('en-US', { ...options, timeZone: 'UTC' })
 }
 
 function formatTimeDisplay(time: string): string {
@@ -63,13 +89,21 @@ export function AssessmentBooking({ onBack, onSuccess }: AssessmentBookingProps)
     email: '',
     branch: '' as string
   })
-  const [selectedDate, setSelectedDate] = useState<Date | null>(null)
+  const [selectedDate, setSelectedDate] = useState<string | null>(null)
   const [selectedTime, setSelectedTime] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState(false)
 
   const availableDates = getAvailableDates()
+  const availableTimes = selectedDate ? getAvailableTimes(selectedDate) : AVAILABLE_TIMES
+
+  const handleSelectDate = (day: string) => {
+    setSelectedDate(day)
+    if (selectedTime && !getAvailableTimes(day).includes(selectedTime)) {
+      setSelectedTime(null)
+    }
+  }
 
   useEffect(() => {
     const loadBranches = async () => {
@@ -123,7 +157,7 @@ export function AssessmentBooking({ onBack, onSuccess }: AssessmentBookingProps)
           phone: formData.phone,
           email: formData.email || null,
           branch: formData.branch,
-          preferred_date: formatDateForDb(selectedDate),
+          preferred_date: selectedDate,
           preferred_time: selectedTime,
           status: 'pending',
           lead_status: 'not_contacted'
@@ -368,22 +402,25 @@ export function AssessmentBooking({ onBack, onSuccess }: AssessmentBookingProps)
                 <Calendar className="w-4 h-4 text-t1-red" />
                 Select Date
               </Label>
-              <div className="grid grid-cols-3 gap-2">
-                {availableDates.map((date) => (
+              <div className="grid grid-cols-4 gap-2">
+                {availableDates.map((day) => (
                   <button
-                    key={date.toISOString()}
-                    onClick={() => setSelectedDate(date)}
+                    key={day}
+                    onClick={() => handleSelectDate(day)}
                     className={`p-3 rounded-xl text-center transition-all ${
-                      selectedDate?.toDateString() === date.toDateString()
+                      selectedDate === day
                         ? 'bg-t1-red text-white ring-2 ring-t1-red ring-offset-2 ring-offset-t1-black'
                         : 'bg-secondary border border-t1-red/20 hover:bg-t1-red/10 text-t1-cream'
                     }`}
                   >
                     <div className="text-xs opacity-70">
-                      {date.toLocaleDateString('en-US', { weekday: 'short' })}
+                      {formatDate(day, { weekday: 'short' })}
                     </div>
                     <div className="font-cinzel font-semibold">
-                      {date.getDate()}
+                      {formatDate(day, { day: 'numeric' })}
+                    </div>
+                    <div className="text-[10px] opacity-60">
+                      {formatDate(day, { month: 'short' })}
                     </div>
                   </button>
                 ))}
@@ -396,7 +433,7 @@ export function AssessmentBooking({ onBack, onSuccess }: AssessmentBookingProps)
                 Select Time
               </Label>
               <div className="grid grid-cols-2 gap-2">
-                {AVAILABLE_TIMES.map((time) => (
+                {availableTimes.map((time) => (
                   <button
                     key={time}
                     onClick={() => setSelectedTime(time)}
