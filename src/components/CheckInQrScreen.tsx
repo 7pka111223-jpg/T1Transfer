@@ -6,7 +6,8 @@ import { supabase } from '../lib/supabase'
 type Branch = { id: string; name: string }
 
 type CheckInQrScreenProps = {
-  onBack: () => void
+  /** Shows a back arrow when given. */
+  onBack?: () => void
 }
 
 export function CheckInQrScreen({ onBack }: CheckInQrScreenProps) {
@@ -36,15 +37,18 @@ export function CheckInQrScreen({ onBack }: CheckInQrScreenProps) {
   const checkInUrl = branchId ? `${window.location.origin}/?branch=${branchId}` : ''
 
   return (
-    <div className="max-w-md mx-auto px-6 py-6 pb-32">
+    <div className="max-w-md mx-auto">
       <div className="no-print">
         <div className="flex items-center gap-3 mb-6">
-          <button
-            onClick={onBack}
-            className="p-2 rounded-xl bg-secondary border border-t1-red/20 hover:bg-t1-red/10 transition-colors"
-          >
-            <ArrowLeft className="w-5 h-5 text-t1-cream" />
-          </button>
+          {onBack && (
+            <button
+              onClick={onBack}
+              aria-label="Back"
+              className="p-2 rounded-xl bg-secondary border border-t1-red/20 hover:bg-t1-red/10 transition-colors"
+            >
+              <ArrowLeft className="w-5 h-5 text-t1-cream" />
+            </button>
+          )}
           <div>
             <h2 className="text-xl font-cinzel font-bold text-t1-cream">Check-in QR</h2>
             <p className="text-xs text-muted-foreground">Print it and hang it at the entrance</p>

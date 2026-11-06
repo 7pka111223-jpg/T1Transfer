@@ -20,7 +20,7 @@
   }
 
 import { useState, useEffect, useLayoutEffect, useRef } from 'react'
-import { User, Calendar, Dumbbell, TrendingUp, LogOut, Bell, QrCode, ChevronRight, Award, Clock, AlertTriangle, Check, X, Users, Zap, Gift } from 'lucide-react'
+import { User, Calendar, Dumbbell, TrendingUp, LogOut, QrCode, ChevronRight, Award, Clock, AlertTriangle, Check, X, Users, Zap, Gift } from 'lucide-react'
 import { Button } from './ui/button'
 import { supabase } from '../lib/supabase'
 import { MemberData } from './MemberLogin'
@@ -33,6 +33,7 @@ import {
   getQrCheckInClosedMessage,
   dailyCheckInLimitMessage,
   isDailyCheckInLimitError,
+  gymDateString,
   type SubscriptionStatus,
 } from '../lib/gym'
 
@@ -516,6 +517,17 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
     const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split('T')[0]
     return bookingDate < today && bookingDate >= thirtyDaysAgoStr && b.status !== 'cancelled'
   }).sort((a, b) => new Date(b.class_date).getTime() - new Date(a.class_date).getTime())
+
+  const nextBooking = myBookings
+    .filter(b => b.status === 'booked' && b.group_class?.end_time
+      && new Date(`${b.class_date}T${b.group_class.end_time}`) > new Date())
+    .sort((a, b) => `${a.class_date} ${a.group_class?.start_time}`.localeCompare(`${b.class_date} ${b.group_class?.start_time}`))[0]
+
+  const formatClassDay = (date: string) => {
+    if (date === gymDateString()) return 'Today'
+    if (date === gymDateString(new Date(), 1)) return 'Tomorrow'
+    return new Date(`${date}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', timeZone: 'UTC' })
+  }
 
   const getCheckInWindow = (booking: ClassBooking) => {
     const start = booking.group_class?.start_time ? new Date(`${booking.class_date}T${booking.group_class.start_time}`) : null
@@ -1126,9 +1138,6 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
               
               {/* Right: Action Buttons */}
               <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
-                <button className="p-2.5 sm:p-3 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 hover:border-white/20 transition-all shadow-sm">
-                  <Bell className="w-5 h-5 sm:w-6 sm:h-6 text-t1-cream" />
-                </button>
                 <button 
                   onClick={() => setShowAttendModal(true)}
                   className="p-2.5 sm:p-3 rounded-xl bg-gradient-to-r from-t1-red/85 to-t1-dark-red/90 border border-red-500/30 text-white shadow-md shadow-t1-red/30 hover:shadow-t1-red/50 transition-all active:scale-95"
@@ -1342,6 +1351,34 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
       <div className="max-w-md mx-auto px-6 py-6 space-y-6">
         {activeTab === 'home' && (
           <>
+            <div className="rounded-2xl p-5 bg-gradient-to-br from-t1-red/25 via-t1-black to-t1-black border border-t1-red/30 shadow-lg flex items-center justify-between gap-4">
+              <div className="min-w-0">
+                <p className="text-[11px] uppercase tracking-widest text-t1-gold font-semibold">Next class</p>
+                {nextBooking ? (
+                  <>
+                    <p className="font-cinzel font-bold text-base leading-snug text-t1-cream line-clamp-2 mt-1">{nextBooking.group_class?.name}</p>
+                    <p className="text-sm text-zinc-400">
+                      {formatClassDay(nextBooking.class_date)} · {formatTime(nextBooking.group_class!.start_time)}
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="font-cinzel font-bold text-lg text-t1-cream mt-1">Nothing booked</p>
+                    <button onClick={() => setActiveTab('classes')} className="text-sm text-t1-red hover:text-t1-cream transition-colors">
+                      Book a class →
+                    </button>
+                  </>
+                )}
+              </div>
+              <Button
+                onClick={() => setShowAttendModal(true)}
+                className="h-12 px-5 shrink-0 bg-gradient-t1 text-white rounded-xl font-cinzel font-bold shadow-md shadow-t1-red/30 flex items-center gap-2"
+              >
+                <QrCode className="w-5 h-5" />
+                Check in
+              </Button>
+            </div>
+
             {subscription || sharedSubscription ? (
               <>
                 {(() => {
@@ -1689,7 +1726,7 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
                   <div className="bg-gradient-to-br from-t1-black/80 to-t1-red/10 rounded-2xl p-8 border border-t1-red/20 text-center flex flex-col items-center gap-2 shadow-lg">
                     <Calendar className="w-14 h-14 mx-auto text-t1-gold mb-2" />
                     <p className="text-t1-cream font-cinzel font-semibold">No more classes this week</p>
-                    <p className="text-xs text-muted-foreground mt-1">Check back Friday for next week's schedule</p>
+                    <p className="text-xs text-muted-foreground mt-1">Next week's classes (Saturday to Thursday) open on Friday</p>
                   </div>
                 )
               })()}

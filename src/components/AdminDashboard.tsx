@@ -354,14 +354,67 @@ const toDateInputValue = (date: Date) =>
 
 void operativeGhost
 
+type AdminTab = 'overview' | 'classes' | 'newuser' | 'attendance' | 'payments' | 'members' | 'movements' | 'shared' | 'expiring' | 'qr' | 'coaches'
+
+// Pages grouped under one bottom-bar tab, switched with a strip at the top.
+const MEMBER_TABS: { id: AdminTab; label: string; count?: number }[] = [
+  { id: 'members', label: 'All' },
+  { id: 'expiring', label: 'Expiring' },
+  { id: 'shared', label: 'Shared' },
+  { id: 'payments', label: 'Payments' },
+]
+const MEMBER_TAB_IDS = MEMBER_TABS.map(t => t.id)
+const CHECK_IN_TABS: { id: AdminTab; label: string }[] = [
+  { id: 'qr', label: 'QR code' },
+  { id: 'attendance', label: 'Attendance' },
+]
+const CHECK_IN_TAB_IDS = CHECK_IN_TABS.map(t => t.id)
+
+function SubTabs({ tabs, active, onSelect }: {
+  tabs: { id: AdminTab; label: string; count?: number }[]
+  active: AdminTab
+  onSelect: (id: AdminTab) => void
+}) {
+  return (
+    <div className="flex gap-1 p-1 rounded-xl bg-secondary border border-t1-red/10" role="tablist">
+      {tabs.map(t => (
+        <button
+          key={t.id}
+          role="tab"
+          aria-selected={active === t.id}
+          onClick={() => onSelect(t.id)}
+          className={`flex-1 whitespace-nowrap px-2 py-2 rounded-lg text-sm transition-colors ${
+            active === t.id ? 'bg-gradient-t1 text-white' : 'text-muted-foreground hover:text-t1-cream'
+          }`}
+        >
+          {t.label}
+          {!!t.count && (
+            <span className={`ml-1.5 inline-block min-w-4 px-1 rounded-full text-[10px] leading-4 ${active === t.id ? 'bg-white/25' : 'bg-amber-500/20 text-amber-400'}`}>
+              {t.count}
+            </span>
+          )}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function BackButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button onClick={onClick} aria-label="Back" className="p-2 rounded-xl bg-secondary border border-t1-red/20 hover:bg-t1-red/10 transition-colors">
+      <ArrowLeft className="w-5 h-5 text-t1-cream" />
+    </button>
+  )
+}
+
 export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
   // Coaches only get the Classes tab (to mark athletes attended) plus their
   // own check-in card; everything else is for full admins.
   const isCoach = admin.role === 'coach'
-  const [activeTab, setActiveTab] = useState<'overview' | 'classes' | 'newuser' | 'attendance' | 'payments' | 'members' | 'movements' | 'shared' | 'expiring' | 'settings' | 'qr' | 'coaches'>(() => {
+  const [activeTab, setActiveTab] = useState<AdminTab>(() => {
     if (admin.role === 'coach') return 'classes'
     const saved = localStorage.getItem('adminActiveTab')
-    return (saved as any) || 'overview'
+    return saved && saved !== 'settings' ? (saved as any) : 'overview'
   })
   const [movements, setMovements] = useState<Movement[]>([])
   const [members, setMembers] = useState<Member[]>([])
@@ -390,7 +443,7 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
   const [isExporting, setIsExporting] = useState(false)
   const [exportMessage, setExportMessage] = useState<string | null>(null)
   const [manualMemberId, setManualMemberId] = useState('')
-  const [windowOffset, setWindowOffset] = useState(0) // 0 = this Fri->Fri, -1 previous, +1 next
+  const [windowOffset, setWindowOffset] = useState(0) // 0 = this Sat–Thu gym week, -1 previous, +1 next
   const [branches, setBranches] = useState<{id: string; name: string; location?: string}[]>([])
   const [branchFilter, setBranchFilter] = useState<string>('all')
   const [levelFilter, setLevelFilter] = useState<string>('all')
@@ -524,20 +577,19 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
     }
   }
 
-  const getFridayWindow = (offset: number) => {
+  // The gym week runs Saturday to Thursday (closed Fridays). `end` is the
+  // Friday after it, exclusive. On a Friday "this week" is the one starting
+  // tomorrow.
+  const getWeekWindow = (offset: number) => {
       const today = new Date()
       const day = today.getDay() // 0 Sun ... 6 Sat
-      
-      // We want to land on the most recent Friday.
-      // Sun(0)->2, Mon(1)->3, Tue(2)->4, Wed(3)->5, Thu(4)->6, Fri(5)->0, Sat(6)->1
-      const daysBack = [2, 3, 4, 5, 6, 0, 1]
-      const diffToFriday = daysBack[day]
-      
+      // Days back to the week's Saturday: Sat 0, Sun 1 ... Thu 5, Fri -1 (tomorrow)
+      const daysBack = [1, 2, 3, 4, 5, -1, 0]
       const start = new Date(today)
-      start.setDate(today.getDate() - diffToFriday + offset * 7)
+      start.setDate(today.getDate() - daysBack[day] + offset * 7)
       start.setHours(0, 0, 0, 0)
       const end = new Date(start)
-      end.setDate(start.getDate() + 7)
+      end.setDate(start.getDate() + 6)
       return { start, end }
     }
 
@@ -549,7 +601,7 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
     }
 
     const loadData = useCallback(async () => {
-      const { start, end } = getFridayWindow(windowOffset)
+      const { start, end } = getWeekWindow(windowOffset)
       const startStr = toLocalYYYYMMDD(start)
       const endStr = toLocalYYYYMMDD(end)
       const today = toLocalYYYYMMDD(new Date())
@@ -1134,18 +1186,19 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
   }
 
   const formatWindowLabel = (offset: number) => {
-    if (offset === 0) return 'This Fri–Fri'
-    if (offset === -1) return 'Prev Fri–Fri'
-    if (offset === 1) return 'Next Fri–Fri'
-    return offset > 1 ? `+${offset}w` : `${offset}w`
+    if (offset === 0) return 'This week'
+    if (offset === -1) return 'Last week'
+    if (offset === 1) return 'Next week'
+    return offset > 1 ? `In ${offset} weeks` : `${-offset} weeks ago`
   }
 
+  // Saturday to Thursday of the week, e.g. "Oct 3 – Oct 8"
   const formatWindowDates = (offset: number) => {
-    const { start, end } = getFridayWindow(offset)
-    const opts: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' }
-    const startStr = start.toLocaleDateString('en-US', opts)
-    const endStr = end.toLocaleDateString('en-US', opts)
-    return `${startStr} – ${endStr}`
+    const { start, end } = getWeekWindow(offset)
+    const thursday = new Date(end)
+    thursday.setDate(end.getDate() - 1)
+    const opts: Intl.DateTimeFormatOptions = { weekday: 'short', month: 'short', day: 'numeric' }
+    return `${start.toLocaleDateString('en-US', opts)} – ${thursday.toLocaleDateString('en-US', opts)}`
   }
 
   const getSessionBookings = (session: ClassSession | null) => {
@@ -1667,7 +1720,7 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
               </div>
               <div>
                 <h2 className="font-cinzel font-bold text-sm sm:text-base">{isCoach ? 'Coach Panel' : 'Admin Panel'}</h2>
-                <p className="text-xs text-muted-foreground hidden sm:block">{admin.full_name}</p>
+                <p className="text-xs text-muted-foreground truncate max-w-[9rem] sm:max-w-none">{admin.full_name}</p>
               </div>
             </div>
             <div className="flex items-center gap-2 sm:gap-3">
@@ -1953,15 +2006,10 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
         {activeTab === 'newuser' && (
           <>
             <div className="flex items-center gap-3 mb-4">
-              <button 
-                onClick={() => selectedAssessment ? setSelectedAssessment(null) : setActiveTab('overview')} 
-                className="p-2 rounded-xl bg-secondary border border-t1-red/20 hover:bg-t1-red/10 transition-colors"
-              >
-                <ArrowLeft className="w-5 h-5 text-t1-cream" />
-              </button>
+              {selectedAssessment && <BackButton onClick={() => setSelectedAssessment(null)} />}
               <h2 className="text-xl font-cinzel font-bold flex items-center gap-2">
                 <UserPlus className="w-5 h-5 text-t1-gold" />
-                Lead Conversion
+                Leads
               </h2>
             </div>
             <p className="text-sm text-muted-foreground">Convert assessment signups into full members with Member IDs</p>
@@ -2363,16 +2411,12 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
         {activeTab === 'classes' && (
           <>
             <div className="flex items-center gap-3 mb-4">
-              <button onClick={() => {
-                if (showSessionDetail) {
+              {showSessionDetail && (
+                <BackButton onClick={() => {
                   setShowSessionDetail(false)
                   setSelectedSession(null)
-                } else if (!isCoach) {
-                  setActiveTab('overview')
-                }
-              }} className="p-2 rounded-xl bg-secondary border border-t1-red/20 hover:bg-t1-red/10 transition-colors">
-                <ArrowLeft className="w-5 h-5 text-t1-cream" />
-              </button>
+                }} />
+              )}
               <div className="flex items-center gap-2">
                 <Calendar className="w-5 h-5 text-t1-gold" />
                 <h2 className="text-xl font-cinzel font-bold">Classes & Rosters</h2>
@@ -2389,7 +2433,7 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
                   <button
                     onClick={() => setWindowOffset(0)}
                     className={`px-3 py-2 rounded-lg text-sm ${windowOffset === 0 ? 'bg-gradient-t1 text-white' : 'border border-t1-red/20 bg-t1-black/40'}`}
-                  >This Fri–Fri</button>
+                  >This week</button>
                     <button
                       disabled={windowOffset >= 0}
                       onClick={() => setWindowOffset(windowOffset + 1)}
@@ -2599,16 +2643,15 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
           </>
         )}
 
-        {activeTab === 'qr' && (
-          <CheckInQrScreen onBack={() => setActiveTab('overview')} />
+        {(activeTab === 'qr' || activeTab === 'attendance') && (
+          <SubTabs tabs={CHECK_IN_TABS} active={activeTab} onSelect={setActiveTab} />
         )}
+
+        {activeTab === 'qr' && <CheckInQrScreen />}
 
         {activeTab === 'attendance' && (
           <>
             <div className="flex items-center gap-3 mb-4">
-              <button onClick={() => setActiveTab('overview')} className="p-2 rounded-xl bg-secondary border border-t1-red/20 hover:bg-t1-red/10 transition-colors">
-                <ArrowLeft className="w-5 h-5 text-t1-cream" />
-              </button>
               <h2 className="text-xl font-cinzel font-bold flex items-center gap-2">
                 <Clock className="w-5 h-5 text-blue-500" />
                 Real-time Attendance
@@ -2694,16 +2737,21 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
           </>
         )}
 
+        {MEMBER_TAB_IDS.includes(activeTab) && !(activeTab === 'members' && selectedMember) && (
+          <SubTabs
+            tabs={MEMBER_TABS.map(t => t.id === 'expiring' ? { ...t, count: expiringSoonMembers.length + expiredMembers.length } : t)}
+            active={activeTab}
+            onSelect={setActiveTab}
+          />
+        )}
+
         {activeTab === 'payments' && (
           <>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <button onClick={() => setActiveTab('overview')} className="p-2 rounded-xl bg-secondary border border-t1-red/20 hover:bg-t1-red/10 transition-colors">
-                  <ArrowLeft className="w-5 h-5 text-t1-cream" />
-                </button>
                 <h2 className="text-xl font-cinzel font-bold flex items-center gap-2">
                   <CreditCard className="w-5 h-5 text-emerald-500" />
-                  Manual Payments
+                  Payments
                 </h2>
               </div>
               <Button
@@ -2801,9 +2849,6 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
 
         {activeTab === 'expiring' && (
           <div className="space-y-4">
-            <button onClick={() => setActiveTab('overview')} className="p-2 rounded-xl bg-secondary border border-t1-red/20 hover:bg-t1-red/10 transition-colors">
-              <ArrowLeft className="w-4 h-4" /> Back to Overview
-            </button>
             <div className="bg-secondary rounded-2xl p-5 border border-t1-red/10">
               <h3 className="font-cinzel font-semibold text-lg mb-4 flex items-center gap-2">
                 <Clock className="w-5 h-5 text-amber-400" />
@@ -2927,9 +2972,6 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
 
         {activeTab === 'shared' && (
           <div className="space-y-4">
-            <button onClick={() => setActiveTab('overview')} className="p-2 rounded-xl bg-secondary border border-t1-red/20 hover:bg-t1-red/10 transition-colors">
-              <ArrowLeft className="w-4 h-4" /> Back to Overview
-            </button>
             <div className="bg-secondary rounded-2xl p-5 border border-t1-red/10">
               <SharedSubscriptions admin={admin} />
             </div>
@@ -2946,9 +2988,8 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
               />
             ) : (
               <>
-                <h2 className="text-xl font-cinzel font-bold">Members & Subscriptions</h2>
-                <div className="flex gap-3">
-                  <div className="relative flex-1">
+                <div className="flex flex-wrap gap-3">
+                  <div className="relative basis-full sm:basis-0 sm:flex-1">
                     <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
                     <Input
                       value={searchTerm}
@@ -2960,7 +3001,7 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
                   <select
                     value={branchFilter}
                     onChange={(e) => setBranchFilter(e.target.value)}
-                    className="h-12 bg-secondary border-t1-red/20 text-t1-cream rounded-xl w-40 px-3"
+                    className="h-12 bg-secondary border-t1-red/20 text-t1-cream rounded-xl flex-1 sm:flex-none sm:w-40 px-3"
                   >
                     <option value="all">All Branches</option>
                     {branches.map(branch => (
@@ -2970,7 +3011,7 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
                   <select
                     value={levelFilter}
                     onChange={(e) => setLevelFilter(e.target.value)}
-                    className="h-12 bg-secondary border-t1-red/20 text-t1-cream rounded-xl w-32 px-3"
+                    className="h-12 bg-secondary border-t1-red/20 text-t1-cream rounded-xl flex-1 sm:flex-none sm:w-32 px-3"
                   >
                     <option value="all">All Levels</option>
                     {uniqueLevels.map(level => (
@@ -3067,9 +3108,7 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
           <>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <button onClick={() => setActiveTab('overview')} className="p-2 rounded-xl bg-secondary border border-t1-red/20 hover:bg-t1-red/10 transition-colors">
-                  <ArrowLeft className="w-5 h-5 text-t1-cream" />
-                </button>
+                <BackButton onClick={() => setActiveTab('overview')} />
                 <h2 className="text-xl font-cinzel font-bold">Manage Movements</h2>
               </div>
               <Button
@@ -3181,73 +3220,43 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
           </>
         )}
 
-        {activeTab === 'settings' && (
-          <div className="space-y-4">
-            <h2 className="text-xl font-cinzel font-bold">Settings</h2>
-            <div className="bg-secondary rounded-2xl p-5 border border-t1-red/10">
-              <h3 className="font-cinzel font-semibold mb-4">Admin Account</h3>
-              <div className="space-y-3">
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Name</span>
-                  <span>{admin.full_name}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Email</span>
-                  <span>{admin.email}</span>
-                </div>
-              </div>
-            </div>
-            
-            <div className="bg-secondary rounded-2xl p-5 border border-t1-red/10">
-              <h3 className="font-cinzel font-semibold mb-4">System Management</h3>
-              <div className="space-y-3">
-                <p className="text-muted-foreground text-sm">Quick access</p>
-                <div className="grid grid-cols-1 sm:grid-cols-1 gap-3">
-                  <button
-                    onClick={() => setActiveTab('members')}
-                    className="w-full h-12 rounded-xl bg-gradient-t1 text-white flex items-center justify-center gap-2"
-                  >
-                    <Users className="w-4 h-4" />
-                    Members & Subscriptions
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
 
       </div>
 
-      <nav className="fixed bottom-0 left-0 right-0 bg-t1-black/95 backdrop-blur border-t border-t1-red/20 z-50 safe-area-inset-bottom">
+      {!isCoach && (
+        <nav className="fixed bottom-0 left-0 right-0 bg-t1-black/95 backdrop-blur border-t border-t1-red/20 z-50 safe-area-inset-bottom">
           <div className="max-w-4xl mx-auto px-2 py-2 sm:py-3">
-            <div className="flex justify-around items-center overflow-x-auto">
-              {(isCoach
-                ? [{ id: 'classes', icon: Calendar, label: 'Classes' }]
-                : [
-                    { id: 'overview', icon: TrendingUp, label: 'Home' },
-                    { id: 'classes', icon: Calendar, label: 'Classes' },
-                    { id: 'qr', icon: QrCode, label: 'Check-in' },
-                    { id: 'members', icon: Users, label: 'Members' },
-                    { id: 'coaches', icon: UserCheck, label: 'Coaches' },
-                    { id: 'settings', icon: Settings, label: 'Settings' }
-                  ]
-              ).map((item) => (
+            <div className="flex justify-around items-center">
+              {([
+                { id: 'overview', icon: TrendingUp, label: 'Home', group: ['overview', 'movements'] },
+                { id: 'classes', icon: Calendar, label: 'Classes', group: ['classes'] },
+                { id: 'qr', icon: QrCode, label: 'Check-in', group: CHECK_IN_TAB_IDS },
+                { id: 'newuser', icon: UserPlus, label: 'Leads', group: ['newuser'], badge: pendingLeads.length },
+                { id: 'members', icon: Users, label: 'Members', group: MEMBER_TAB_IDS },
+                { id: 'coaches', icon: UserCheck, label: 'Coaches', group: ['coaches'] },
+              ] as { id: AdminTab; icon: typeof Users; label: string; group: AdminTab[]; badge?: number }[]).map((item) => (
                 <button
                   key={item.id}
-                  onClick={() => setActiveTab(item.id as typeof activeTab)}
-                  className={`flex flex-col items-center gap-1 px-2 py-2 rounded-xl transition-all min-w-[56px] ${
-                    activeTab === item.id 
-                      ? 'text-t1-red' 
+                  onClick={() => setActiveTab(item.id)}
+                  className={`relative flex flex-col items-center gap-1 px-1 py-2 rounded-xl transition-all min-w-[52px] ${
+                    item.group.includes(activeTab)
+                      ? 'text-t1-red'
                       : 'text-muted-foreground hover:text-t1-cream'
                   }`}
                 >
                   <item.icon className="w-5 h-5" />
                   <span className="text-[10px]">{item.label}</span>
+                  {!!item.badge && (
+                    <span className="absolute top-0.5 right-1.5 min-w-4 h-4 px-1 rounded-full bg-t1-red text-white text-[10px] leading-4 text-center">
+                      {item.badge > 99 ? '99+' : item.badge}
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
           </div>
         </nav>
+      )}
 
       {/* Edit Date/Time Dialog */}
       <Dialog open={editDateTimeModal.open} onOpenChange={(open) => setEditDateTimeModal(prev => ({ ...prev, open }))}>

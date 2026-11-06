@@ -31,6 +31,10 @@ type StaffSchedule = {
 }
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+// The gym week runs Saturday to Thursday. Friday (5) is closed, so it is only
+// listed for someone who still has a Friday time saved.
+const GYM_WEEK = [6, 0, 1, 2, 3, 4]
+const FRIDAY = 5
 
 const STATUS_STYLE: Record<ReportRow['status'], { label: string; className: string }> = {
   present: { label: 'Checked in', className: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30' },
@@ -232,8 +236,8 @@ export function CoachAttendance({ adminToken }: { adminToken?: string }) {
               const canOverride = row.status === 'missed' || row.status === 'open'
               return (
                 <div key={key} className="rounded-xl bg-t1-black/40 border border-t1-red/10 p-3 space-y-2">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
+                  <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+                    <div className="min-w-0 flex-1 basis-40">
                       <p className="font-semibold text-sm truncate">{row.full_name}</p>
                       <p className="text-xs text-muted-foreground">
                         Session {formatSessionTime(row.session_time)}
@@ -322,30 +326,19 @@ export function CoachAttendance({ adminToken }: { adminToken?: string }) {
               {person.full_name}
               <span className="ml-2 text-[11px] font-normal text-muted-foreground uppercase tracking-wide">{person.role}</span>
             </p>
-            <div className="grid grid-cols-4 sm:grid-cols-7 gap-2">
-              {WEEKDAYS.map((label, weekday) => {
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2">
+              {(person.schedule[String(FRIDAY)] ? [...GYM_WEEK.slice(0, 6), FRIDAY] : GYM_WEEK).map(weekday => {
+                const label = WEEKDAYS[weekday]
                 const key = `${person.id}-${weekday}`
                 const time = person.schedule[String(weekday)]
                 const assigned = Boolean(time) || assigningCell === key
                 return (
-                  <div key={key} className="space-y-1">
-                    <span className="text-[11px] text-muted-foreground flex items-center justify-between gap-1">
-                      <span className="flex items-center gap-1">
-                        {label}
-                        {savingCell === key && <Loader2 className="w-3 h-3 animate-spin" />}
-                      </span>
-                      {time && (
-                        <button
-                          onClick={() => saveTime(person, weekday, '')}
-                          disabled={savingCell === key}
-                          className="text-muted-foreground hover:text-t1-red"
-                          aria-label={`Set ${label} to not assigned`}
-                          title="Set to N/A"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      )}
+                  <div key={key} className="flex items-center gap-2">
+                    <span className="w-9 shrink-0 text-xs text-muted-foreground flex items-center gap-1">
+                      {label}
+                      {savingCell === key && <Loader2 className="w-3 h-3 animate-spin" />}
                     </span>
+                    <div className="flex-1 min-w-0">
                     {assigned ? (
                       <input
                         type="time"
@@ -368,6 +361,18 @@ export function CoachAttendance({ adminToken }: { adminToken?: string }) {
                         N/A
                       </button>
                     )}
+                    </div>
+                    {time ? (
+                      <button
+                        onClick={() => saveTime(person, weekday, '')}
+                        disabled={savingCell === key}
+                        className="p-1 text-muted-foreground hover:text-t1-red"
+                        aria-label={`Set ${label} to not assigned`}
+                        title="Set to N/A"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    ) : <span className="w-6 shrink-0" />}
                   </div>
                 )
               })}

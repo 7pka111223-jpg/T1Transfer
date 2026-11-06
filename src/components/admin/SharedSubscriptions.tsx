@@ -384,7 +384,8 @@ export function SharedSubscriptions({ admin }: SharedSubscriptionsProps) {
       <div className="bg-t1-black/50 rounded-2xl p-5 border border-t1-red/20 space-y-3">
         <h4 className="font-cinzel font-semibold text-sm">Create Shared Subscription</h4>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-          <select className="h-10 bg-t1-black border border-t1-red/20 text-t1-cream rounded-lg px-3 text-sm" id="pkg">
+          <select defaultValue="" className="h-10 bg-t1-black border border-t1-red/20 text-t1-cream rounded-lg px-3 text-sm sm:flex-1" id="pkg">
+            <option value="" disabled>{packages.length ? 'Choose a package' : 'No packages yet'}</option>
             {packages.map(p => (
               <option key={p.id} value={p.id}>{p.name || `${p.sessions_count} Sessions`}</option>
             ))}
@@ -394,7 +395,7 @@ export function SharedSubscriptions({ admin }: SharedSubscriptionsProps) {
               const sel = (document.getElementById('pkg') as HTMLSelectElement | null)?.value
               if (sel) handleCreate(sel)
             }}
-            className="bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg"
+            className="bg-gradient-t1 text-white rounded-lg"
           >
             <Plus className="w-4 h-4 mr-1"/> Create
           </Button>
