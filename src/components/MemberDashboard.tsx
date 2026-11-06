@@ -22,6 +22,7 @@
 import { useState, useEffect, useLayoutEffect, useRef } from 'react'
 import { User, Calendar, Dumbbell, TrendingUp, LogOut, QrCode, ChevronRight, Award, Clock, AlertTriangle, Check, X, Users, Zap, Gift } from 'lucide-react'
 import { Button } from './ui/button'
+import { GlassTabBar } from './ui/GlassTabBar'
 import { supabase } from '../lib/supabase'
 import { MemberData } from './MemberLogin'
 import { WorkoutTracking } from './WorkoutTracking'
@@ -1114,7 +1115,7 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
   }
 
   return (
-    <div className="h-screen bg-t1-black text-t1-cream overflow-y-auto pb-24">
+    <div className="h-screen bg-t1-black text-t1-cream overflow-y-auto glass-bar-spacer">
       {activeTab !== 'profile' && (
         <div className="sticky top-0 z-40 bg-black/90 backdrop-blur-xl border-b border-white/5 shadow-lg shadow-black/40" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
           <div className="max-w-md mx-auto px-4 sm:px-6 py-4 sm:py-5">
@@ -1923,31 +1924,16 @@ export function MemberDashboard({ member, onLogout, checkInPayload, onCheckInHan
         )}
       </div>
 
-      <nav className="fixed bottom-0 left-0 right-0 bg-t1-black/95 backdrop-blur border-t border-t1-red/20 z-50 safe-area-inset-bottom">
-        <div className="max-w-md mx-auto px-2 sm:px-6 py-2 sm:py-3">
-          <div className="flex justify-around items-center">
-            {[
-              { id: 'home', icon: Dumbbell, label: 'Home' },
-              { id: 'classes', icon: Calendar, label: 'Classes' },
-              { id: 'progress', icon: TrendingUp, label: 'Progress' },
-              { id: 'profile', icon: User, label: 'Profile' }
-            ].map((item) => (
-              <button
-                key={item.id}
-                onClick={() => setActiveTab(item.id as typeof activeTab)}
-                className={`flex flex-col items-center gap-1 px-2 sm:px-4 py-2 rounded-xl transition-all min-w-[56px] ${
-                  activeTab === item.id 
-                    ? 'text-t1-red' 
-                    : 'text-muted-foreground hover:text-t1-cream'
-                }`}
-              >
-                <item.icon className="w-4 h-4 sm:w-5 sm:h-5" />
-                <span className="text-[10px] sm:text-xs">{item.label}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      </nav>
+      <GlassTabBar<typeof activeTab>
+        active={activeTab}
+        onSelect={setActiveTab}
+        tabs={[
+          { id: 'home', icon: Dumbbell, label: 'Home' },
+          { id: 'classes', icon: Calendar, label: 'Classes' },
+          { id: 'progress', icon: TrendingUp, label: 'Progress' },
+          { id: 'profile', icon: User, label: 'Profile' },
+        ]}
+      />
     </div>
   )
 }

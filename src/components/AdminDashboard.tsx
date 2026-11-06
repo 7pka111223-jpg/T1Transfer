@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { ArrowLeft, Plus, Trash2, Edit2, Check, X, Dumbbell, Users, TrendingUp, Settings, Bell, ChevronRight, Search, UserPlus, CreditCard, Star, Activity, Clock, Award, Calendar, Shield, DollarSign, Phone, MessageCircle, XCircle, MapPin, MoreVertical, AlertTriangle, QrCode, Download, UserCheck } from 'lucide-react'
 import { Button } from './ui/button'
+import { GlassTabBar } from './ui/GlassTabBar'
 import { Input } from './ui/input'
 import { Label } from './ui/label'
 import { supabase } from '../lib/supabase'
@@ -1710,7 +1711,7 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
     .slice(0, 50)
 
   return (
-    <div className="min-h-screen bg-t1-black text-t1-cream pb-24 overflow-y-auto">
+    <div className={`min-h-screen bg-t1-black text-t1-cream overflow-y-auto ${isCoach ? 'pb-24' : 'glass-bar-spacer'}`}>
       <div className="sticky top-0 z-40 bg-gradient-to-r from-t1-red/20 to-t1-dark-red/20 border-b border-t1-red/20 backdrop-blur-md" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
         <div className="max-w-4xl mx-auto px-4 sm:px-6 py-4">
           <div className="flex items-center justify-between">
@@ -3224,38 +3225,19 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
       </div>
 
       {!isCoach && (
-        <nav className="fixed bottom-0 left-0 right-0 bg-t1-black/95 backdrop-blur border-t border-t1-red/20 z-50 safe-area-inset-bottom">
-          <div className="max-w-4xl mx-auto px-2 py-2 sm:py-3">
-            <div className="flex justify-around items-center">
-              {([
-                { id: 'overview', icon: TrendingUp, label: 'Home', group: ['overview', 'movements'] },
-                { id: 'classes', icon: Calendar, label: 'Classes', group: ['classes'] },
-                { id: 'qr', icon: QrCode, label: 'Check-in', group: CHECK_IN_TAB_IDS },
-                { id: 'newuser', icon: UserPlus, label: 'Leads', group: ['newuser'], badge: pendingLeads.length },
-                { id: 'members', icon: Users, label: 'Members', group: MEMBER_TAB_IDS },
-                { id: 'coaches', icon: UserCheck, label: 'Coaches', group: ['coaches'] },
-              ] as { id: AdminTab; icon: typeof Users; label: string; group: AdminTab[]; badge?: number }[]).map((item) => (
-                <button
-                  key={item.id}
-                  onClick={() => setActiveTab(item.id)}
-                  className={`relative flex flex-col items-center gap-1 px-1 py-2 rounded-xl transition-all min-w-[52px] ${
-                    item.group.includes(activeTab)
-                      ? 'text-t1-red'
-                      : 'text-muted-foreground hover:text-t1-cream'
-                  }`}
-                >
-                  <item.icon className="w-5 h-5" />
-                  <span className="text-[10px]">{item.label}</span>
-                  {!!item.badge && (
-                    <span className="absolute top-0.5 right-1.5 min-w-4 h-4 px-1 rounded-full bg-t1-red text-white text-[10px] leading-4 text-center">
-                      {item.badge > 99 ? '99+' : item.badge}
-                    </span>
-                  )}
-                </button>
-              ))}
-            </div>
-          </div>
-        </nav>
+        <GlassTabBar<AdminTab>
+          label="Admin"
+          active={activeTab}
+          onSelect={setActiveTab}
+          tabs={[
+            { id: 'overview', icon: TrendingUp, label: 'Home', group: ['overview', 'movements'] },
+            { id: 'classes', icon: Calendar, label: 'Classes' },
+            { id: 'qr', icon: QrCode, label: 'Check-in', group: CHECK_IN_TAB_IDS },
+            { id: 'newuser', icon: UserPlus, label: 'Leads', badge: pendingLeads.length },
+            { id: 'members', icon: Users, label: 'Members', group: MEMBER_TAB_IDS },
+            { id: 'coaches', icon: UserCheck, label: 'Coaches' },
+          ]}
+        />
       )}
 
       {/* Edit Date/Time Dialog */}
