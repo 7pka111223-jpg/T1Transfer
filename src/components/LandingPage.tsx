@@ -7,7 +7,6 @@ const drops = () => import('./drops/LandingDrops')
 const BrandLogo = lazy(() => drops().then(m => ({ default: m.BrandLogo })))
 const BrandBackground = lazy(() => drops().then(m => ({ default: m.BrandBackground })))
 const BookButton = lazy(() => drops().then(m => ({ default: m.BookButton })))
-const GymGallery = lazy(() => drops().then(m => ({ default: m.GymGallery })))
 
 type LandingPageProps = {
   onBookAssessment: () => void
@@ -134,16 +133,6 @@ export function LandingPage({ onBookAssessment, onMemberLogin, onAdminLogin }: L
               <span className="font-medium">@tripleonebars</span>
             </button>
           </div>
-
-          {/* Photos from the gym, fanned out as they scroll into view */}
-          <section className="-mx-6 self-stretch">
-            <h2 className="text-center font-cinzel font-bold tracking-widest text-sm text-t1-cream/80 uppercase">
-              Inside Triple One
-            </h2>
-            <Suspense fallback={<div className="h-72" />}>
-              <GymGallery />
-            </Suspense>
-          </section>
         </div>
 
         {/* Footer */}

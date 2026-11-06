@@ -5,7 +5,6 @@ import type { ReactNode } from 'react'
 import { LiquidGlassLogo } from './liquid-glass-logo/liquid-glass-logo'
 import { TopographicFlow } from './topographic-flow/topographic-flow'
 import { ChromaticButton } from './chromatic-button/chromatic-button'
-import { FanGallery, type FanGalleryItem } from './fan-gallery/fan-gallery'
 
 const RED = '#ba181c'
 const DARK_RED = '#7b161b'
@@ -65,31 +64,5 @@ export function BookButton({ onClick, children }: { onClick: () => void; childre
     >
       {children}
     </ChromaticButton>
-  )
-}
-
-const GYM_PHOTOS: FanGalleryItem[] = [
-  { src: '/gallery/gym-1.jpg', alt: 'Muscle-up on the bars at night' },
-  { src: '/gallery/gym-2.jpg', alt: 'Plank hold during a group class' },
-  { src: '/gallery/gym-3.jpg', alt: 'Coach writing the workout on the board' },
-  { src: '/gallery/gym-6.jpg', alt: 'The Triple One family' },
-  { src: '/gallery/gym-4.jpg', alt: 'Group class on the turf' },
-  { src: '/gallery/gym-5.jpg', alt: 'Members training on the rings' },
-  { src: '/gallery/gym-7.jpg', alt: 'Hanging leg raise on the rig' },
-]
-
-export function GymGallery() {
-  return (
-    <FanGallery
-      items={GYM_PHOTOS}
-      entrance="stack"
-      trigger="scroll"
-      once
-      showTitle={false}
-      cardWidth={150}
-      radius={16}
-      ariaLabel="Photos from Triple One"
-      style={{ width: '100%' }}
-    />
   )
 }
