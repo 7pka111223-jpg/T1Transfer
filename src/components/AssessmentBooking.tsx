@@ -72,11 +72,11 @@ function formatDate(day: string, options: Intl.DateTimeFormatOptions = { weekday
 }
 
 function formatTimeDisplay(time: string): string {
-  const [hours] = time.split(':')
+  const [hours, minutes = '00'] = time.split(':')
   const h = parseInt(hours, 10)
   const ampm = h >= 12 ? 'PM' : 'AM'
   const h12 = h % 12 || 12
-  return `${h12}:00${ampm}`
+  return `${h12}:${minutes.slice(0, 2)}${ampm}`
 }
 
 export function AssessmentBooking({ onBack, onSuccess }: AssessmentBookingProps) {

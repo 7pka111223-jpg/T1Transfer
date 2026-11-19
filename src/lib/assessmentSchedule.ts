@@ -46,12 +46,22 @@ const FIRST_SETTLEMENT: Record<number, AssessmentSlot[]> = {
   ],
 }
 
+const CFC_SLOT: AssessmentSlot[] = [{ time: '19:30', label: 'All levels' }]
+const CFC: Record<number, AssessmentSlot[]> = {
+  6: CFC_SLOT, // Saturday
+  1: CFC_SLOT, // Monday
+  3: CFC_SLOT, // Wednesday
+}
+
 const isFirstSettlement = (branchName: string | null | undefined) =>
   !!branchName && /settlement/i.test(branchName)
+const isCfc = (branchName: string | null | undefined) =>
+  !!branchName && /^\s*cfc\b|festival/i.test(branchName)
 
 /** The slots offered at a branch on a given weekday (0 = Sunday). */
 export function assessmentSlotsFor(branchName: string | null | undefined, weekday: number): AssessmentSlot[] {
   if (isFirstSettlement(branchName)) return FIRST_SETTLEMENT[weekday] ?? []
+  if (isCfc(branchName)) return CFC[weekday] ?? []
   return DEFAULT_SLOTS
 }
 
