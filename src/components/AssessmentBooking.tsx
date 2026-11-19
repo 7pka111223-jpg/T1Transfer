@@ -5,6 +5,7 @@ import { Input } from './ui/input'
 import { Label } from './ui/label'
 import { supabase } from '../lib/supabase'
 import { GYM_TIME_ZONE, gymDateString } from '../lib/gym'
+import { assessmentSlotsFor, assessmentSlotLabel, type AssessmentSlot } from '../lib/assessmentSchedule'
 
 type AssessmentBookingProps = {
   onBack: () => void
@@ -16,8 +17,6 @@ type BranchData = {
   name: string
   location?: string
 }
-
-const AVAILABLE_TIMES = ['19:00','20:00','21:00']
 
 const CLOSED_WEEKDAY = 5 // Friday (0 = Sunday)
 
@@ -41,11 +40,12 @@ const gymMinutesNow = () => {
   return part('hour') * 60 + part('minute')
 }
 
-// Today's slots that haven't started yet; every slot on later days.
-function getAvailableTimes(day: string): string[] {
-  if (day !== gymDateString()) return AVAILABLE_TIMES
+// The branch's slots for that day: today only those that haven't started yet.
+function getAvailableTimes(day: string, branchName: string | undefined): AssessmentSlot[] {
+  const slots = assessmentSlotsFor(branchName, dayAsDate(day).getUTCDay())
+  if (day !== gymDateString()) return slots
   const now = gymMinutesNow()
-  return AVAILABLE_TIMES.filter(time => {
+  return slots.filter(({ time }) => {
     const [h, m] = time.split(':').map(Number)
     return h * 60 + m > now
   })
@@ -53,14 +53,16 @@ function getAvailableTimes(day: string): string[] {
 
 // From today to the same weekday next week, both included (Sat 10th shows
 // Sat 10th - Sat 17th), skipping Fridays when the gym is closed. Once today's
-// last slot has started, the week starts from tomorrow instead.
-function getAvailableDates(): string[] {
+// last slot has started, the week starts from tomorrow instead. Days with no
+// slots at the branch are left out.
+function getAvailableDates(branchName: string | undefined): string[] {
   const today = gymDateString()
-  const first = getAvailableTimes(today).length > 0 ? today : addDays(today, 1)
+  const first = getAvailableTimes(today, branchName).length > 0 ? today : addDays(today, 1)
   const dates: string[] = []
   for (let i = 0; i <= 7; i++) {
     const day = addDays(first, i)
-    if (dayAsDate(day).getUTCDay() !== CLOSED_WEEKDAY) dates.push(day)
+    if (dayAsDate(day).getUTCDay() === CLOSED_WEEKDAY) continue
+    if (getAvailableTimes(day, branchName).length > 0) dates.push(day)
   }
   return dates
 }
@@ -95,14 +97,15 @@ export function AssessmentBooking({ onBack, onSuccess }: AssessmentBookingProps)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState(false)
 
-  const availableDates = getAvailableDates()
-  const availableTimes = selectedDate ? getAvailableTimes(selectedDate) : AVAILABLE_TIMES
+  const branchName = branches.find(b => b.id === formData.branch)?.name
+  const availableDates = getAvailableDates(branchName)
+  const availableTimes = selectedDate ? getAvailableTimes(selectedDate, branchName) : []
+  const selectedLabel = assessmentSlotLabel(branchName, selectedDate, selectedTime)
 
+  // A different day has different sessions, so the time is picked again.
   const handleSelectDate = (day: string) => {
+    if (day !== selectedDate) setSelectedTime(null)
     setSelectedDate(day)
-    if (selectedTime && !getAvailableTimes(day).includes(selectedTime)) {
-      setSelectedTime(null)
-    }
   }
 
   useEffect(() => {
@@ -200,6 +203,7 @@ export function AssessmentBooking({ onBack, onSuccess }: AssessmentBookingProps)
             <div>
               <p className="text-sm text-muted-foreground">Time</p>
               <p className="text-lg font-cinzel font-semibold">{selectedTime && formatTimeDisplay(selectedTime)}</p>
+              {selectedLabel && <p className="text-sm text-t1-gold">{selectedLabel}</p>}
             </div>
             {formData.branch && branches.find(b => b.id === formData.branch)?.location && (
               <div className="pt-1">
@@ -298,6 +302,11 @@ export function AssessmentBooking({ onBack, onSuccess }: AssessmentBookingProps)
                           key={branch.id}
                           type="button"
                           onClick={() => {
+                            if (branch.id !== formData.branch) {
+                              // Each branch has its own sessions
+                              setSelectedDate(null)
+                              setSelectedTime(null)
+                            }
                             setFormData({ ...formData, branch: branch.id })
                             setStep('info')
                           }}
@@ -432,21 +441,30 @@ export function AssessmentBooking({ onBack, onSuccess }: AssessmentBookingProps)
                 <Clock className="w-4 h-4 text-t1-red" />
                 Select Time
               </Label>
-              <div className="grid grid-cols-2 gap-2">
-                {availableTimes.map((time) => (
-                  <button
-                    key={time}
-                    onClick={() => setSelectedTime(time)}
-                    className={`p-3 rounded-xl text-center transition-all font-cinzel ${
-                      selectedTime === time
-                        ? 'bg-t1-red text-white ring-2 ring-t1-red ring-offset-2 ring-offset-t1-black'
-                        : 'bg-secondary border border-t1-red/20 hover:bg-t1-red/10 text-t1-cream'
-                    }`}
-                  >
-                    {formatTimeDisplay(time)}
-                  </button>
-                ))}
-              </div>
+              {!selectedDate ? (
+                <p className="text-sm text-muted-foreground">Pick a day to see its sessions</p>
+              ) : (
+                <div className="grid grid-cols-2 gap-2">
+                  {availableTimes.map(({ time, label }) => (
+                    <button
+                      key={time}
+                      onClick={() => setSelectedTime(time)}
+                      className={`p-3 rounded-xl text-center transition-all ${
+                        selectedTime === time
+                          ? 'bg-t1-red text-white ring-2 ring-t1-red ring-offset-2 ring-offset-t1-black'
+                          : 'bg-secondary border border-t1-red/20 hover:bg-t1-red/10 text-t1-cream'
+                      }`}
+                    >
+                      <div className="font-cinzel">{formatTimeDisplay(time)}</div>
+                      {label && (
+                        <div className={`mt-0.5 text-xs leading-tight ${selectedTime === time ? 'text-white/85' : 'text-t1-gold/90'}`}>
+                          {label}
+                        </div>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
             <Button
@@ -493,7 +511,10 @@ export function AssessmentBooking({ onBack, onSuccess }: AssessmentBookingProps)
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Time</span>
-                  <span className="font-cinzel">{selectedTime}</span>
+                  <span className="text-right">
+                    <span className="font-cinzel">{selectedTime && formatTimeDisplay(selectedTime)}</span>
+                    {selectedLabel && <span className="block text-xs text-t1-gold">{selectedLabel}</span>}
+                  </span>
                 </div>
               </div>
             </div>

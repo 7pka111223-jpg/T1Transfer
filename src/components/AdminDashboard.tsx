@@ -13,6 +13,7 @@ import { CheckInQrScreen } from './CheckInQrScreen'
 import { CoachCheckIn } from './admin/CoachCheckIn'
 import { CoachAttendance } from './admin/CoachAttendance'
 import { getSubscriptionStatus, LOW_SESSIONS_THRESHOLD, EXPIRING_SOON_DAYS } from '../lib/gym'
+import { assessmentSlotLabel } from '../lib/assessmentSchedule'
 
 type AdminDashboardProps = {
   admin: {
@@ -2295,6 +2296,11 @@ export function AdminDashboard({ admin, onLogout }: AdminDashboardProps) {
                               {assessment.preferred_date || 'No date'} {assessment.preferred_time ? `at ${assessment.preferred_time}` : ''}
                             </span>
                           </div>
+                          {assessmentSlotLabel(resolveBranchName(assessment.branch), assessment.preferred_date, assessment.preferred_time) && (
+                            <span className="text-xs text-t1-gold">
+                              {assessmentSlotLabel(resolveBranchName(assessment.branch), assessment.preferred_date, assessment.preferred_time)}
+                            </span>
+                          )}
                           <div className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/5 border border-white/10">
                             <Clock className="w-3 h-3 text-muted-foreground" />
                             <span className="text-xs text-muted-foreground">Booked: {formatBookingTime(assessment.created_at)}</span>
