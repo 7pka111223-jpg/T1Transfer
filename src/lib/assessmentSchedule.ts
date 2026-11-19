@@ -41,7 +41,7 @@ const FIRST_SETTLEMENT: Record<number, AssessmentSlot[]> = {
     { time: '21:00', label: 'Advanced' },
   ],
   4: [ // Thursday
-    { time: '19:00', label: 'Legs' },
+    { time: '19:00', label: 'Legs · All levels' },
     { time: '20:00', label: 'T1 Lab session' },
   ],
 }
