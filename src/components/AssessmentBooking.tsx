@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { ArrowLeft, Calendar, Clock, User, Phone, Mail, CheckCircle, Loader2, MapPin } from 'lucide-react'
+import { ArrowLeft, Calendar, Clock, User, Phone, Mail, CheckCircle, Loader2, MapPin, MessageCircle } from 'lucide-react'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Label } from './ui/label'
@@ -186,7 +186,14 @@ export function AssessmentBooking({ onBack, onSuccess }: AssessmentBookingProps)
           
           <div className="space-y-2">
             <h2 className="text-2xl font-cinzel font-bold">Assessment Booked!</h2>
-            <p className="text-muted-foreground">We'll see you soon</p>
+          </div>
+
+          <div className="flex items-center gap-3 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-left">
+            <MessageCircle className="w-6 h-6 shrink-0 text-emerald-400" />
+            <div>
+              <p className="font-semibold text-emerald-300">Await confirmation through WhatsApp</p>
+              <p className="text-sm text-muted-foreground">We'll message you on {formData.phone.trim()} to confirm your slot.</p>
+            </div>
           </div>
 
           <div className="bg-secondary rounded-2xl p-6 border border-t1-red/20 space-y-3">
@@ -220,9 +227,6 @@ export function AssessmentBooking({ onBack, onSuccess }: AssessmentBookingProps)
           </div>
 
           <div className="space-y-3">
-            <p className="text-sm text-muted-foreground">
-              We'll contact you to confirm your appointment.
-            </p>
             <Button 
               onClick={onSuccess}
               className="w-full h-12 bg-gradient-t1 hover:opacity-90 text-white font-cinzel font-semibold rounded-xl glow-t1"
